@@ -34,6 +34,63 @@ def _uniquify_fast(indices: np.ndarray, coeffs: np.ndarray) -> tuple[np.ndarray,
 
 
 @njit(nogil=True)
+def _spv_sum_fast(
+    indices1: np.ndarray,
+    coeffs1: np.ndarray,
+    indices2: np.ndarray,
+    coeffs2: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    i1 = 0
+    i2 = 0
+    iout = 0
+    indices = np.empty(indices1.shape[0] + indices2.shape[0], dtype=indices1.dtype)
+    coeffs = np.empty(indices1.shape[0] + indices2.shape[0], dtype=coeffs1.dtype)
+    while i1 < indices1.shape[0] and i2 < indices2.shape[0]:
+        if indices1[i1] == indices2[i2]:
+            index = indices1[i1]
+            coeff = coeffs1[i1] + coeffs2[i2]
+            i1 += 1
+            i2 += 1
+            if not (np.isclose(coeff.real, 0.) and np.isclose(coeff.imag, 0.)):
+                indices[iout] = index
+                coeffs[iout] = coeff
+                iout += 1
+        elif indices1[i1] > indices2[i2]:
+            indices[iout] = indices2[i2]
+            coeffs[iout] = coeffs2[i2]
+            i2 += 1
+            iout += 1
+        else:
+            indices[iout] = indices1[i1]
+            coeffs[iout] = coeffs1[i1]
+            i1 += 1
+            iout += 1
+
+    r1 = indices1.shape[0] - i1
+    r2 = indices2.shape[0] - i2
+    if r1 > 0:
+        indices[iout:iout + r1] = indices1[i1:]
+        coeffs[iout:iout + r1] = coeffs1[i1:]
+        iout += r1
+    elif r2 > 0:
+        indices[iout:iout + r2] = indices2[i2:]
+        coeffs[iout:iout + r2] = coeffs2[i2:]
+        iout += r2
+
+    return indices[:iout], coeffs[:iout]
+
+
+def spv_sum_fast(lhs: SparsePauliVector, rhs: SparsePauliVector) -> SparsePauliVector:
+    if lhs.num_qubits != lhs.num_qubits:
+        raise ValueError('Sum between incompatible SparsePauliVectors')
+    if lhs.num_terms * lhs.num_terms == 0:
+        return SparsePauliVector([], [], lhs.num_qubits, no_check=True)
+
+    indices, coeffs = _spv_sum_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs)
+    return SparsePauliVector(indices, coeffs, lhs.num_qubits, no_check=True)
+
+
+@njit(nogil=True)
 def _spv_prod_fast(
     indices1: np.ndarray,
     coeffs1: np.ndarray,
@@ -110,3 +167,35 @@ def spv_commutator_fast(lhs: SparsePauliVector, rhs: SparsePauliVector) -> Spars
     indices, coeffs = _spv_commutator_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs,
                                            lhs.num_qubits)
     return SparsePauliVector(indices, coeffs, lhs.num_qubits, no_check=True)
+
+
+@njit(nogil=True)
+def _spv_innerprod_fast(
+    indices1: np.ndarray,
+    coeffs1: np.ndarray,
+    indices2: np.ndarray,
+    coeffs2: np.ndarray
+) -> complex:
+    i1 = 0
+    i2 = 0
+    result = 0.+0.j
+    while i1 < indices1.shape[0] and i2 < indices2.shape[0]:
+        if indices1[i1] == indices2[i2]:
+            result += np.conjugate(coeffs1[i1]) * coeffs2[i2]
+            i1 += 1
+            i2 += 1
+        elif indices1[i1] > indices2[i2]:
+            i2 += 1
+        else:
+            i1 += 1
+
+    return result
+
+
+def spv_innerprod_fast(lhs: SparsePauliVector, rhs: SparsePauliVector) -> SparsePauliVector:
+    if lhs.num_qubits != lhs.num_qubits:
+        raise ValueError('Matmul between incompatible SparsePauliVectors')
+    if lhs.num_terms * lhs.num_terms == 0:
+        return SparsePauliVector([], [], lhs.num_qubits, no_check=True)
+
+    return _spv_innerprod_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs)
