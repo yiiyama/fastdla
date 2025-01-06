@@ -19,8 +19,30 @@ def _compute_xmatrix(basis_indices, basis_coeffs):
     return xmat
 
 
-def compute_xmatrix(basis: Sequence[SparsePauliVector]) -> np.array:
+def compute_xmatrix(basis: Sequence[SparsePauliVector]) -> np.ndarray:
     return _compute_xmatrix([op.indices for op in basis], [op.coeffs for op in basis])
+
+
+@njit
+def _extend_xmatrix(xmat, basis_indices, basis_coeffs, new_indices, new_coeffs):
+    current_size = xmat.shape[0]
+    new_xmat = np.empty((current_size + 1, current_size + 1), dtype=np.complex128)
+    new_xmat[:current_size, :current_size] = xmat
+    for ib in range(current_size):
+        ip = _spv_innerprod_fast(basis_indices[ib], basis_coeffs[ib], new_indices, new_coeffs)
+        new_xmat[ib, -1] = ip
+        new_xmat[-1, ib] = ip.conjugate()
+    new_xmat[-1, -1] = 1.
+    return new_xmat
+
+
+def extend_xmatrix(
+    xmat: np.ndarray,
+    basis: Sequence[SparsePauliVector],
+    new_op: SparsePauliVector
+) -> np.ndarray:
+    return _extend_xmatrix(xmat, [op.indices for op in basis], [op.coeffs for op in basis],
+                           new_op.indices, new_op.coeffs)
 
 
 @njit
@@ -37,9 +59,9 @@ def _is_independent(new_indices, new_coeffs, basis_indices, basis_coeffs, xmat_i
         # Q is orthogonal to all basis vectors
         return True
 
-    # Residual calculation: subtract Pi*ai from Q directly 
-    for xinv_row, bindices, bcoeffs in zip(xmat_inv, basis_indices, basis_coeffs):
-        a_val = xinv_row @ pidag_q
+    # Residual calculation: subtract Pi*ai from Q directly
+    a_proj = xmat_inv @ pidag_q
+    for a_val, bindices, bcoeffs in zip(a_proj, basis_indices, basis_coeffs):
         if np.isclose(a_val.real, 0.) and np.isclose(a_val.imag, 0.):
             continue
         new_indices, new_coeffs = _spv_sum_fast(new_indices, new_coeffs,
@@ -73,24 +95,36 @@ def is_independent(
                            xmat_inv)
 
 
-def full_dla_basis(generators: Sequence[SparsePauliVector]) -> list[SparsePauliVector]:
+def full_dla_basis(
+    generators: Sequence[SparsePauliVector],
+    *,
+    verbosity=0
+) -> list[SparsePauliVector]:
     basis_indices = [op.indices for op in generators]
     basis_coeffs = [op.coeffs / np.sqrt(np.sum(np.square(np.abs(op.coeffs)))) for op in generators]
     num_qubits = generators[0].num_qubits
 
-    xmat_inv = np.linalg.inv(_compute_xmatrix(basis_indices, basis_coeffs))
+    xmat = _compute_xmatrix(basis_indices, basis_coeffs)
+    xmat_inv = np.linalg.inv(xmat)
 
     with ThreadPoolExecutor() as executor:
-        commutators = [
+        commutators = set([
             executor.submit(_spv_commutator_fast, idx1, c1, idx2, c2, num_qubits)
             for i1, (idx1, c1) in enumerate(zip(basis_indices, basis_coeffs))
             for idx2, c2 in zip(basis_indices[:i1], basis_coeffs[:i1])
-        ]
+        ])
+        if verbosity > 2:
+            print(f'Calculating {len(commutators)} commutators..')
 
         while commutators:
             done, _ = wait(commutators, return_when=FIRST_COMPLETED)
-            for fut in done:
-                commutators.remove(fut)
+            if verbosity > 2:
+                print(f'Evaluating {len(done)} commutators; total {len(commutators)}')
+
+            for ifut, fut in enumerate(done):
+                if verbosity > 3 and ifut % 1000 == 999:
+                    print(f'Total {len(commutators)} remaining')
+                commutators.discard(fut)
                 indices, coeffs = fut.result()
                 if indices.shape[0] == 0:
                     continue
@@ -99,14 +133,24 @@ def full_dla_basis(generators: Sequence[SparsePauliVector]) -> list[SparsePauliV
                 if not _is_independent(indices, coeffs, basis_indices, basis_coeffs, xmat_inv):
                     continue
 
-                commutators.extend([
+                if verbosity > 1:
+                    new_op = SparsePauliVector(indices, coeffs, num_qubits, no_check=True)
+                    print(f'New vector: {new_op}')
+
+                new_commutators = [
                     executor.submit(_spv_commutator_fast, indices, coeffs, idx, c, num_qubits)
                     for idx, c in zip(basis_indices, basis_coeffs)
-                ])
+                ]
+                commutators.update(new_commutators)
+                if verbosity > 2:
+                    print(f'Adding {len(new_commutators)} commutators; total {len(commutators)}')
 
+                xmat = _extend_xmatrix(xmat, basis_indices, basis_coeffs, indices, coeffs)
+                xmat_inv = np.linalg.inv(xmat)
                 basis_indices.append(indices)
                 basis_coeffs.append(coeffs)
-                xmat_inv = np.linalg.inv(_compute_xmatrix(basis_indices, basis_coeffs))
+                if verbosity > 0:
+                    print(f'Current DLA dimension: {len(basis_indices)}')
 
     return [SparsePauliVector(idx, c, num_qubits=num_qubits, no_check=True)
             for idx, c in zip(basis_indices, basis_coeffs)]
