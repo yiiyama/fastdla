@@ -96,14 +96,16 @@ def is_independent(
 
 
 @njit
-def _main_loop(basis_indices, basis_coeffs, xmat_cont, results):
+def _main_loop(basis_indices, basis_coeffs, xmat_cont, results_sorted):
     new_ops = []
     xmat_inv = np.linalg.inv(xmat_cont[0])
     prev_indices = np.array([-1], dtype=np.uint64)
     prev_coeffs_conj = None
-    for indices, coeffs in results:
-        if (prev_indices.shape[0] == indices.shape[0]
-                and np.all(prev_indices == indices)
+    for indices, coeffs in results_sorted:
+        if indices.shape[0] == 0:
+            continue
+        coeffs /= np.sqrt(np.sum(np.square(np.abs(coeffs))))
+        if (prev_indices.shape[0] == indices.shape[0] and np.all(prev_indices == indices)
                 and np.isclose(np.abs(prev_coeffs_conj @ coeffs), 1.)):
             continue
 
@@ -123,7 +125,7 @@ def _main_loop(basis_indices, basis_coeffs, xmat_cont, results):
     return new_ops
 
 
-def full_dla_basis(
+def generate_dla(
     generators: Sequence[SparsePauliVector],
     *,
     verbosity=0
@@ -141,7 +143,7 @@ def full_dla_basis(
             for idx2, c2 in zip(basis_indices[:i1], basis_coeffs[:i1])
         ])
         if verbosity > 2:
-            print(f'Calculating {len(commutators)} commutators..')
+            print(f'Starting with {len(commutators)} commutators..')
 
         while commutators:
             done, _ = wait(commutators, return_when=FIRST_COMPLETED)
@@ -151,14 +153,14 @@ def full_dla_basis(
             commutators.difference_update(done)
             if verbosity > 2:
                 print(f'{len(commutators)} commutators remain unevaluated')
+
             results = [fut.result() for fut in done]
-            results = sorted(((indices, coeffs / np.sqrt(np.sum(np.square(np.abs(coeffs)))))
-                              for indices, coeffs in results if indices.shape[0] != 0),
-                             key=lambda res: tuple(res[0]))
-            if not results:
-                continue
+            indices_tuples = [tuple(res[0]) for res in results]
+            sort_idx = sorted(range(len(results)), key=indices_tuples.__getitem__)
+            results = [results[idx] for idx in sort_idx]
 
             new_ops = _main_loop(basis_indices, basis_coeffs, xmat_cont, results)
+
             new_commutators = [
                 executor.submit(_spv_commutator_fast, indices, coeffs, idx, c, num_qubits)
                 for indices, coeffs, basis_upto in new_ops
