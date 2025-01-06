@@ -35,35 +35,35 @@ class SparsePauliVector:
 
     def __init__(
         self,
-        strings: Union[str, int, Sequence[str], Sequence[int]],
+        indices: Union[str, int, Sequence[str], Sequence[int]],
         coeffs: Union[Number, Sequence[Number]],
         num_qubits=None,
         no_check=False
     ):
         if no_check:
-            self.indices = np.asarray(strings, dtype=np.uint64)
+            self.indices = np.asarray(indices, dtype=np.uint64)
             self.coeffs = np.asarray(coeffs, dtype=np.complex128)
             self.num_qubits = num_qubits
             return
 
-        if isinstance(strings, (str, int)):
-            strings = [strings]
+        if isinstance(indices, (str, int)):
+            indices = [indices]
         if isinstance(coeffs, Number):
             coeffs = [coeffs]
 
-        if len(strings) == 0:
+        if len(indices) == 0:
             self.num_qubits = num_qubits
             self.indices = np.array([], dtype=np.uint64)
             self.coeffs = np.array([], dtype=np.complex128)
             return
 
-        if isinstance(strings[0], str):
-            num_qubits = len(strings[0])
-            indices = np.array([self.str_to_idx(pstr) for pstr in strings], dtype=np.uint64)
+        if isinstance(indices[0], str):
+            num_qubits = len(indices[0])
+            indices = np.array([self.str_to_idx(pstr) for pstr in indices], dtype=np.uint64)
         elif num_qubits is None:
             raise ValueError('Need num_qubits')
         else:
-            indices = np.asarray(strings, dtype=np.uint64)
+            indices = np.asarray(indices, dtype=np.uint64)
 
         self.num_qubits = num_qubits
         sort_idx = np.argsort(indices)
@@ -71,7 +71,7 @@ class SparsePauliVector:
         self.coeffs = np.asarray(coeffs, dtype=np.complex128)[sort_idx]
 
         if self.indices.shape != self.coeffs.shape:
-            raise ValueError('Strings and coeffs shape mismatch')
+            raise ValueError('Indices and coeffs shape mismatch')
 
     def __str__(self) -> str:
         opstr = ', '.join(f'{coeff} {self.idx_to_str(idx, self.num_qubits)}'
@@ -101,28 +101,36 @@ class SparsePauliVector:
     def hpart(self) -> 'SparsePauliVector':
         """Return a new SPO with Hermitian terms only."""
         indices = np.nonzero(np.logical_not(np.isclose(self.coeffs.real, 0.)))[0]
-        return SparsePauliVector(self.indices[indices], self.coeffs[indices].real, self.num_qubits)
+        return SparsePauliVector(self.indices[indices], self.coeffs[indices].real, self.num_qubits,
+                                 no_check=True)
 
     @property
     def apart(self) -> 'SparsePauliVector':
         """Return a new SPO with anti-Hermitian terms only."""
         indices = np.nonzero(np.logical_not(np.isclose(self.coeffs.imag, 0.)))[0]
         return SparsePauliVector(self.indices[indices], 1.j * self.coeffs[indices].imag,
-                                 self.num_qubits)
+                                 self.num_qubits, no_check=True)
 
     def normalize(self) -> 'SparsePauliVector':
         norm = np.sqrt(np.sum(np.square(np.abs(self.coeffs))))
-        return SparsePauliVector(self.indices.copy(), self.coeffs / norm, self.num_qubits)
+        return SparsePauliVector(self.indices.copy(), self.coeffs / norm, self.num_qubits,
+                                 no_check=True)
+
+    def __neg__(self) -> 'SparsePauliVector':
+        return SparsePauliVector(self.indices, -self.coeffs, self.num_qubits, no_check=True)
 
     def __add__(self, other: 'SparsePauliVector') -> 'SparsePauliVector':
         return spv_sum(self, other)
+
+    def __sub__(self, other: 'SparsePauliVector') -> 'SparsePauliVector':
+        return spv_sum(self, -other)
 
     def __mul__(self, scalar: Number) -> 'SparsePauliVector':
         try:
             coeffs = scalar * self.coeffs
         except Exception:  # pylint: disable=broad-exception-caught
             return NotImplemented
-        return SparsePauliVector(self.indices, coeffs, self.num_qubits)
+        return SparsePauliVector(self.indices, coeffs, self.num_qubits, no_check=True)
 
     def __rmul__(self, scalar: Number) -> 'SparsePauliVector':
         return self.__mul__(scalar)
@@ -139,29 +147,31 @@ class SparsePauliVector:
 
     @staticmethod
     def from_csc(array: csc_array, num_qubits: int) -> 'SparsePauliVector':
-        return SparsePauliVector(array.indices, array.data, num_qubits)
+        if array.shape[1] != 1:
+            raise ValueError('Only a single-column array can be converted to SPV')
+        return SparsePauliVector(array.indices, array.data, num_qubits, no_check=True)
 
 
-def _uniquify(strings: np.ndarray, coeffs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _uniquify(indices: np.ndarray, coeffs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Uniquify a pauli list by summing up the cofficients of overlapping operators."""
-    strings_uniq, unique_indices = np.unique(strings, return_inverse=True)
-    if strings_uniq.shape[0] == strings.shape[0]:
-        # strings is already unique
-        return strings_uniq, coeffs[np.argsort(unique_indices)]
+    indices_uniq, unique_indices = np.unique(indices, return_inverse=True)
+    if indices_uniq.shape[0] == indices.shape[0]:
+        # indices is already unique
+        return indices_uniq, coeffs[np.argsort(unique_indices)]
 
-    # strings is not unique -> merge duplicates
-    coeffs_matrix = np.zeros((coeffs.shape[0], strings_uniq.shape[0]), dtype=coeffs.dtype)
+    # indices is not unique -> merge duplicates
+    coeffs_matrix = np.zeros((coeffs.shape[0], indices_uniq.shape[0]), dtype=coeffs.dtype)
     coeffs_matrix[np.arange(coeffs.shape[0]), unique_indices] = coeffs
-    return strings_uniq, np.sum(coeffs_matrix, axis=0)
+    return indices_uniq, np.sum(coeffs_matrix, axis=0)
 
 
 def spv_sum(*ops) -> SparsePauliVector:
     """Sum of two sparse Pauli ops."""
-    strings, coeffs = _uniquify(
-        np.concatenate([op.strings for op in ops]),
+    indices, coeffs = _uniquify(
+        np.concatenate([op.indices for op in ops]),
         np.concatenate([op.coeffs for op in ops])
     )
-    return SparsePauliVector(strings, coeffs, ops[0].num_qubits)
+    return SparsePauliVector(indices, coeffs, ops[0].num_qubits, no_check=True)
 
 
 def spv_prod(o1: SparsePauliVector, o2: SparsePauliVector) -> SparsePauliVector:
@@ -170,7 +180,7 @@ def spv_prod(o1: SparsePauliVector, o2: SparsePauliVector) -> SparsePauliVector:
         raise ValueError('Matmul between incompatible SparsePauliOps')
 
     if (num_terms := o1.num_terms * o2.num_terms) == 0:
-        return SparsePauliVector([], [], o1.num_qubits)
+        return SparsePauliVector([], [], o1.num_qubits, no_check=True)
 
     indices = np.unravel_index(np.arange(num_terms), (o1.num_terms, o2.num_terms))
     coeffs = np.outer(o1.coeffs, o2.coeffs).reshape(-1)
@@ -178,14 +188,14 @@ def spv_prod(o1: SparsePauliVector, o2: SparsePauliVector) -> SparsePauliVector:
     s2s = o2.indices[indices[1]]
 
     shape = o1.shape
-    p1s = np.array(np.unravel_index(s1s, shape=shape))  # shape [num_qubits, num_strings]
+    p1s = np.array(np.unravel_index(s1s, shape=shape))  # shape [num_qubits, num_indices]
     p2s = np.array(np.unravel_index(s2s, shape=shape))
     pout = PAULI_PROD_INDEX[p1s, p2s]
-    sout = np.ravel_multi_index(tuple(pout), shape)  # shape [num_strings]
+    sout = np.ravel_multi_index(tuple(pout), shape)  # shape [num_indices]
     coeffs *= np.prod(PAULI_PROD_COEFF[p1s, p2s], axis=0)
 
-    strings, coeffs = _uniquify(sout, coeffs)
-    return SparsePauliVector(strings, coeffs, o1.num_qubits)
+    indices, coeffs = _uniquify(sout, coeffs)
+    return SparsePauliVector(indices, coeffs, o1.num_qubits, no_check=True)
 
 
 def spv_commutator(o1: SparsePauliVector, o2: SparsePauliVector) -> SparsePauliVector:
@@ -221,6 +231,7 @@ def csc_to_spvlist(matrix: csc_array) -> list[SparsePauliVector]:
         idx_begin, idx_end = matrix.indptr[icol:icol+2]
         ops.append(SparsePauliVector(matrix.indices[idx_begin:idx_end],
                                      matrix.data[idx_begin:idx_end],
-                                     num_qubits=num_qubits))
+                                     num_qubits=num_qubits,
+                                     no_check=True))
 
     return ops

@@ -24,7 +24,8 @@ def compute_xmatrix(basis: list[SparsePauliVector]) -> np.array:
 
 @njit
 def _is_independent(new_indices, new_coeffs, basis_indices, basis_coeffs, xmat_inv):
-    pidag_q = np.empty(len(basis_indices), dtype=np.complex128)
+    basis_size = len(basis_indices)
+    pidag_q = np.empty(basis_size, dtype=np.complex128)
     is_zero = True
     for ib, (bindex, bcoeff) in enumerate(zip(basis_indices, basis_coeffs)):
         ip = _spv_innerprod_fast(bindex, bcoeff, new_indices, new_coeffs)
@@ -36,10 +37,14 @@ def _is_independent(new_indices, new_coeffs, basis_indices, basis_coeffs, xmat_i
         return True
 
     a_proj = xmat_inv @ pidag_q
-    pia_indices = basis_indices[0]
-    pia_coeffs = basis_coeffs[0] * a_proj[0]
-    for aval, bindex, bcoeff in zip(a_proj[1:], basis_indices[1:], basis_coeffs[1:]):
-        pia_indices, pia_coeffs = _spv_sum_fast(pia_indices, pia_coeffs, bindex, bcoeff * aval)
+    a_nonzero = np.nonzero(a_proj)[0]
+    # a_proj cannot be a null vector because xmat_inv is nonsingular and pidag_q is nonnull
+    pia_indices = basis_indices[a_nonzero[0]]
+    pia_coeffs = basis_coeffs[a_nonzero[0]] * a_proj[a_nonzero[0]]
+    for a_idx in a_nonzero[1:]:
+        pia_indices, pia_coeffs = _spv_sum_fast(pia_indices, pia_coeffs,
+                                                basis_indices[a_idx],
+                                                basis_coeffs[a_idx] * a_proj[a_idx])
 
     res_indices, _ = _spv_sum_fast(new_indices, new_coeffs, pia_indices, -pia_coeffs)
     return res_indices.shape[0] != 0
@@ -91,6 +96,7 @@ def full_dla_basis(generators: Sequence[SparsePauliVector]) -> list[SparsePauliV
                 if indices.shape[0] == 0:
                     continue
 
+                coeffs /= np.sqrt(np.sum(np.square(np.abs(coeffs))))
                 new_op = SparsePauliVector(indices, coeffs, num_qubits, no_check=True)
                 if not is_independent(new_op, basis, xmat_inv):
                     continue
