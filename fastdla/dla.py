@@ -95,6 +95,34 @@ def is_independent(
                            xmat_inv)
 
 
+@njit
+def _main_loop(basis_indices, basis_coeffs, xmat_cont, results):
+    new_ops = []
+    xmat_inv = np.linalg.inv(xmat_cont[0])
+    prev_indices = np.array([-1], dtype=np.uint64)
+    prev_coeffs_conj = None
+    for indices, coeffs in results:
+        if (prev_indices.shape[0] == indices.shape[0]
+                and np.all(prev_indices == indices)
+                and np.isclose(np.abs(prev_coeffs_conj @ coeffs), 1.)):
+            continue
+
+        prev_indices = indices
+        prev_coeffs_conj = coeffs.conjugate()
+
+        if not _is_independent(indices, coeffs, basis_indices, basis_coeffs, xmat_inv):
+            continue
+
+        new_ops.append((indices, coeffs, len(basis_indices)))
+
+        xmat_cont[0] = _extend_xmatrix(xmat_cont[0], basis_indices, basis_coeffs, indices, coeffs)
+        xmat_inv = np.linalg.inv(xmat_cont[0])
+        basis_indices.append(indices)
+        basis_coeffs.append(coeffs)
+
+    return new_ops
+
+
 def full_dla_basis(
     generators: Sequence[SparsePauliVector],
     *,
@@ -104,8 +132,7 @@ def full_dla_basis(
     basis_coeffs = [op.coeffs / np.sqrt(np.sum(np.square(np.abs(op.coeffs)))) for op in generators]
     num_qubits = generators[0].num_qubits
 
-    xmat = _compute_xmatrix(basis_indices, basis_coeffs)
-    xmat_inv = np.linalg.inv(xmat)
+    xmat_cont = [_compute_xmatrix(basis_indices, basis_coeffs)]
 
     with ThreadPoolExecutor() as executor:
         commutators = set([
@@ -121,36 +148,27 @@ def full_dla_basis(
             if verbosity > 2:
                 print(f'Evaluating {len(done)} commutators; total {len(commutators)}')
 
-            for ifut, fut in enumerate(done):
-                if verbosity > 3 and ifut % 1000 == 999:
-                    print(f'Total {len(commutators)} remaining')
-                commutators.discard(fut)
-                indices, coeffs = fut.result()
-                if indices.shape[0] == 0:
-                    continue
+            commutators.difference_update(done)
+            if verbosity > 2:
+                print(f'{len(commutators)} commutators remain unevaluated')
+            results = [fut.result() for fut in done]
+            results = sorted(((indices, coeffs / np.sqrt(np.sum(np.square(np.abs(coeffs)))))
+                              for indices, coeffs in results if indices.shape[0] != 0),
+                             key=lambda res: tuple(res[0]))
+            if not results:
+                continue
 
-                coeffs /= np.sqrt(np.sum(np.square(np.abs(coeffs))))
-                if not _is_independent(indices, coeffs, basis_indices, basis_coeffs, xmat_inv):
-                    continue
-
-                if verbosity > 1:
-                    new_op = SparsePauliVector(indices, coeffs, num_qubits, no_check=True)
-                    print(f'New vector: {new_op}')
-
-                new_commutators = [
-                    executor.submit(_spv_commutator_fast, indices, coeffs, idx, c, num_qubits)
-                    for idx, c in zip(basis_indices, basis_coeffs)
-                ]
-                commutators.update(new_commutators)
-                if verbosity > 2:
-                    print(f'Adding {len(new_commutators)} commutators; total {len(commutators)}')
-
-                xmat = _extend_xmatrix(xmat, basis_indices, basis_coeffs, indices, coeffs)
-                xmat_inv = np.linalg.inv(xmat)
-                basis_indices.append(indices)
-                basis_coeffs.append(coeffs)
-                if verbosity > 0:
-                    print(f'Current DLA dimension: {len(basis_indices)}')
+            new_ops = _main_loop(basis_indices, basis_coeffs, xmat_cont, results)
+            new_commutators = [
+                executor.submit(_spv_commutator_fast, indices, coeffs, idx, c, num_qubits)
+                for indices, coeffs, basis_upto in new_ops
+                for idx, c in zip(basis_indices[:basis_upto], basis_coeffs[:basis_upto])
+            ]
+            commutators.update(new_commutators)
+            if verbosity > 2:
+                print(f'Adding {len(new_commutators)} commutators; total {len(commutators)}')
+            if verbosity > 1:
+                print(f'Current DLA dimension: {len(basis_indices)}')
 
     return [SparsePauliVector(idx, c, num_qubits=num_qubits, no_check=True)
             for idx, c in zip(basis_indices, basis_coeffs)]
