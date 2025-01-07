@@ -1,6 +1,7 @@
 """Calculation of DLA."""
 from collections.abc import Sequence
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
+from typing import Optional
 import numpy as np
 from numba import njit
 from .sparse_pauli_vector import SparsePauliVector
@@ -73,7 +74,7 @@ def _is_independent(new_indices, new_coeffs, basis_indices, basis_coeffs, xmat_i
 def is_independent(
     new_op: SparsePauliVector,
     basis: list[SparsePauliVector],
-    xmat_inv: np.ndarray,
+    xmat_inv: Optional[np.ndarray] = None,
 ) -> bool:
     """
     Let the known dla basis ops be P0, P1, ..., Pn. The basis_matrix Π is a matrix formed by
@@ -90,6 +91,9 @@ def is_independent(
     R = Q - Π a
     to determine the linear independence of Q with respect to {Pi}.
     """
+    if xmat_inv is None:
+        xmat_inv = np.linalg.inv(compute_xmatrix(basis))
+
     return _is_independent(new_op.indices, new_op.coeffs,
                            [op.indices for op in basis], [op.coeffs for op in basis],
                            xmat_inv)
