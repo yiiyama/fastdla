@@ -146,16 +146,16 @@ def generate_dla(
             for i1, (idx1, c1) in enumerate(zip(basis_indices, basis_coeffs))
             for idx2, c2 in zip(basis_indices[:i1], basis_coeffs[:i1])
         ])
-        if verbosity > 2:
+        if verbosity > 1:
             print(f'Starting with {len(commutators)} commutators..')
 
         while commutators:
             done, _ = wait(commutators, return_when=FIRST_COMPLETED)
-            if verbosity > 2:
+            if verbosity > 1:
                 print(f'Evaluating {len(done)} commutators; total {len(commutators)}')
 
             commutators.difference_update(done)
-            if verbosity > 2:
+            if verbosity > 1:
                 print(f'{len(commutators)} commutators remain unevaluated')
 
             results = [fut.result() for fut in done]
@@ -171,9 +171,9 @@ def generate_dla(
                 for idx, c in zip(basis_indices[:basis_upto], basis_coeffs[:basis_upto])
             ]
             commutators.update(new_commutators)
-            if verbosity > 2:
-                print(f'Adding {len(new_commutators)} commutators; total {len(commutators)}')
             if verbosity > 1:
+                print(f'Adding {len(new_commutators)} commutators; total {len(commutators)}')
+            if new_ops and verbosity > 0:
                 print(f'Current DLA dimension: {len(basis_indices)}')
 
     return [SparsePauliVector(idx, c, num_qubits=num_qubits, no_check=True)
