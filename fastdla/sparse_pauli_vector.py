@@ -31,12 +31,13 @@ class SparsePauliVector:
     """Purpose-specific implementation of a sparse Pauli operator."""
     @staticmethod
     def str_to_idx(pstr: str) -> int:
-        return np.ravel_multi_index(tuple(PAULI_INDICES[p] for p in pstr),
-                                    (4,) * len(pstr))
+        indices = np.array([PAULI_INDICES[p] for p in pstr], dtype=np.uint64)
+        return np.sum(indices * (4 ** np.arange(indices.shape[0])[::-1]))
 
     @staticmethod
     def idx_to_str(idx: int, num_qubits: int) -> str:
-        return ''.join(PAULI_NAMES[int(i)] for i in np.unravel_index(idx, (4,) * num_qubits))
+        indices = ((idx // (4 ** np.arange(num_qubits)[::-1])) % 4).astype(int)
+        return ''.join(PAULI_NAMES[i] for i in indices)
 
     def __init__(
         self,
@@ -218,12 +219,11 @@ def spv_prod(o1: SparsePauliVector, o2: SparsePauliVector) -> SparsePauliVector:
     s1s = o1.indices[indices[0]]
     s2s = o2.indices[indices[1]]
 
-    shape = o1.shape
-    p1s = np.array(np.unravel_index(s1s, shape=shape))  # shape [num_qubits, num_indices]
-    p2s = np.array(np.unravel_index(s2s, shape=shape))
-    pout = PAULI_PROD_INDEX[p1s, p2s]
-    sout = np.ravel_multi_index(tuple(pout), shape)  # shape [num_indices]
-    coeffs *= np.prod(PAULI_PROD_COEFF[p1s, p2s], axis=0)
+    p1s = ((s1s[:, None] // (4 ** np.arange(o1.num_qubits)[None, ::-1])) % 4).astype(int)
+    p2s = ((s2s[:, None] // (4 ** np.arange(o2.num_qubits)[None, ::-1])) % 4).astype(int)
+    pout = PAULI_PROD_INDEX[p1s, p2s]  # shape [num_terms, num_qubits]
+    sout = np.sum(pout * (4 ** np.arange(o1.num_qubits)[None, ::-1]), axis=1)
+    coeffs *= np.prod(PAULI_PROD_COEFF[p1s, p2s], axis=1)
 
     indices, coeffs = _uniquify(sout, coeffs)
     return SparsePauliVector(indices, coeffs, o1.num_qubits, no_check=True)
