@@ -7,7 +7,6 @@ from scipy.sparse import csc_array
 
 PAULI_NAMES = ['I', 'X', 'Y', 'Z']
 PAULI_INDICES = {'I': 0, 'X': 1, 'Y': 2, 'Z': 3}
-
 PAULI_PROD_INDEX = np.array([
     [0, 1, 2, 3],
     [1, 0, 3, 2],
@@ -20,6 +19,12 @@ PAULI_PROD_COEFF = np.array([
     [1., -1.j, 1., 1.j],
     [1., 1.j, -1.j, 1.]
 ], dtype=np.complex128)
+PAULIS = np.array([
+    [[1., 0.], [0., 1.]],
+    [[0., 1.], [1., 0.]],
+    [[0., -1.j], [1.j, 0.]],
+    [[1., 0.], [0., -1.]]
+])
 
 
 class SparsePauliVector:
@@ -79,11 +84,7 @@ class SparsePauliVector:
         return f'[{opstr}]'
 
     def __repr__(self) -> str:
-        return ('SparsePauliVector(['
-                + (', '.join(f"'{self.idx_to_str(idx, self.num_qubits)}'" for idx in self.indices))
-                + '], coeffs=['
-                + (', '.join(f'{coeff:.2f}' for coeff in self.coeffs))
-                + '])')
+        return f'SparsePauliVector({repr(self.paulis)}, {repr(self.coeffs)})'
 
     @property
     def shape(self) -> tuple[int]:
@@ -96,6 +97,10 @@ class SparsePauliVector:
     @property
     def num_terms(self) -> int:
         return self.indices.shape[0]
+
+    @property
+    def paulis(self) -> list[str]:
+        return [self.idx_to_str(idx, self.num_qubits) for idx in self.indices]
 
     @property
     def hpart(self) -> 'SparsePauliVector':
@@ -115,6 +120,13 @@ class SparsePauliVector:
         norm = np.sqrt(np.sum(np.square(np.abs(self.coeffs))))
         return SparsePauliVector(self.indices.copy(), self.coeffs / norm, self.num_qubits,
                                  no_check=True)
+
+    def __eq__(self, other: 'SparsePauliVector') -> bool:
+        if self.num_qubits != other.num_qubits or self.num_terms != other.num_terms:
+            return False
+        if np.any(self.indices != other.indices):
+            return False
+        return np.allclose(self.coeffs, other.coeffs)
 
     def __neg__(self) -> 'SparsePauliVector':
         return SparsePauliVector(self.indices, -self.coeffs, self.num_qubits, no_check=True)
@@ -151,6 +163,22 @@ class SparsePauliVector:
             raise ValueError('Only a single-column array can be converted to SPV')
         return SparsePauliVector(array.indices, array.data, num_qubits, no_check=True)
 
+    def to_dense(self) -> np.ndarray:
+        dense = np.zeros(self.vlen, dtype=self.coeffs.dtype)
+        dense[self.indices] = self.coeffs
+        return dense
+
+    def to_matrix(self) -> np.ndarray:
+        pauli_indices = ((self.indices[:, None] // (4 ** np.arange(self.num_qubits)[None, ::-1]))
+                         % 4).astype(int)
+        args = ()
+        for iq in range(self.num_qubits):
+            args += (PAULIS[pauli_indices[:, iq]], [0, iq + 1, self.num_qubits + iq + 1])
+        args += (list(range(2 * self.num_qubits + 1)),)
+        matrices = np.einsum(*args)
+        matrices = matrices.reshape((self.num_terms, 2 ** self.num_qubits, 2 ** self.num_qubits))
+        return np.sum(self.coeffs[:, None, None] * matrices, axis=0)
+
 
 def _uniquify(indices: np.ndarray, coeffs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Uniquify a pauli list by summing up the cofficients of overlapping operators."""
@@ -162,7 +190,10 @@ def _uniquify(indices: np.ndarray, coeffs: np.ndarray) -> tuple[np.ndarray, np.n
     # indices is not unique -> merge duplicates
     coeffs_matrix = np.zeros((coeffs.shape[0], indices_uniq.shape[0]), dtype=coeffs.dtype)
     coeffs_matrix[np.arange(coeffs.shape[0]), unique_indices] = coeffs
-    return indices_uniq, np.sum(coeffs_matrix, axis=0)
+    coeffs_uniq = np.sum(coeffs_matrix, axis=0)
+    # remove terms with null coefficients
+    nonzero = np.nonzero(np.logical_not(np.isclose(coeffs_uniq, 0.)))[0]
+    return indices_uniq[nonzero], coeffs_uniq[nonzero]
 
 
 def spv_sum(*ops) -> SparsePauliVector:
