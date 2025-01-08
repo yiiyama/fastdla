@@ -123,9 +123,9 @@ def _main_loop(basis_indices, basis_coeffs, xmat_ref, result_indices, result_coe
 
     for ires in range(num_results):
         if verbosity > 2 and ires % 100 == 0:
+            dla_dim = len(basis_indices)
             with objmode():
-                print(f'Processing SPV {ires}/{num_results} (DLA dimension {len(basis_indices)})..',
-                      flush=True)
+                print(f'Processing SPV {ires}/{num_results} (DLA dim {dla_dim})..', flush=True)
 
         indices = result_indices[ires]
         if indices.shape[0] == 0:
