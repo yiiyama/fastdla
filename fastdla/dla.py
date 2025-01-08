@@ -153,7 +153,7 @@ def _main_loop(
     prev_coeffs_conj = None
 
     for ires in range(num_results):
-        if verbosity > 2 and ires % 100 == 0:
+        if verbosity > 2 and ires % 500 == 0:
             dla_dim = len(basis_indptr) - 1
             with objmode():
                 print(f'Processing SPV {ires}/{num_results} (DLA dim {dla_dim})..', flush=True)
@@ -184,6 +184,7 @@ def generate_dla(
     generators: Sequence[SparsePauliVector],
     *,
     max_dim: Optional[int] = None,
+    min_tasks: int = 0,
     max_workers: Optional[int] = None,
     verbosity: int = 0
 ) -> list[SparsePauliVector]:
@@ -270,7 +271,11 @@ def generate_dla(
                 executor.shutdown(wait=False, cancel_futures=True)
                 break
 
-            done, _ = wait(commutators, return_when=FIRST_COMPLETED)
+            while True:
+                done, not_done = wait(commutators, return_when=FIRST_COMPLETED)
+                if len(not_done) == 0 or len(done) > min_tasks:
+                    break
+                time.sleep(1.)
 
     return [
         SparsePauliVector(
