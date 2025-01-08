@@ -169,16 +169,20 @@ class SparsePauliVector:
         dense[self.indices] = self.coeffs
         return dense
 
-    def to_matrix(self) -> np.ndarray:
+    def to_matrix(self, *, npmod=np) -> np.ndarray:
+        """Convert the Pauli sum to a dense (2**num_qubits, 2**num_qubits) matrix.
+
+        SparsePauliOp.to_matrix() seems to have a much more efficient implementation.
+        """
         pauli_indices = ((self.indices[:, None] // (4 ** np.arange(self.num_qubits)[None, ::-1]))
                          % 4).astype(int)
         args = ()
         for iq in range(self.num_qubits):
             args += (PAULIS[pauli_indices[:, iq]], [0, iq + 1, self.num_qubits + iq + 1])
         args += (list(range(2 * self.num_qubits + 1)),)
-        matrices = np.einsum(*args)
+        matrices = npmod.einsum(*args)
         matrices = matrices.reshape((self.num_terms, 2 ** self.num_qubits, 2 ** self.num_qubits))
-        return np.sum(self.coeffs[:, None, None] * matrices, axis=0)
+        return npmod.sum(self.coeffs[:, None, None] * matrices, axis=0)
 
 
 def _uniquify(indices: np.ndarray, coeffs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
