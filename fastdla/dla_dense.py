@@ -77,10 +77,12 @@ def _main_loop_body(val, verbosity=0):
     idx1, idx2, basis, size, xmat_inv = val
 
     if verbosity > 1:
+        icomm = (idx1 * (idx1 + 1)) // 2 + idx2
         jax.lax.cond(
-            jnp.equal(((idx1 * (idx1 + 1)) // 2 + idx2) % 500, 0),
-            lambda: jax.debug.print('Basis size {size} commutator [b[{idx1}], b[{idx2}]]',
-                                    size=size, idx1=idx1, idx2=idx2),
+            jnp.equal(icomm % 2000, 0),
+            lambda: jax.debug.print('Basis size {size}; {icomm}th commutator'
+                                    ' [b[{idx1}], b[{idx2}]]',
+                                    size=size, icomm=icomm, idx1=idx1, idx2=idx2),
             lambda: None
         )
 
@@ -116,14 +118,14 @@ def _main_loop_body(val, verbosity=0):
 def generate_dla(
     generators: Sequence[np.ndarray],
     *,
+    size_increment: int = 256,
     max_dim: Optional[int] = None,
     verbosity: int = 0
 ) -> list[np.ndarray]:
     if (size := len(generators)) == 0:
         return []
 
-    max_size = 1024
-
+    max_size = size_increment
     generators = jnp.asarray(generators)
     basis = jnp.resize(generators, (max_size,) + generators.shape[1:]).at[size:].set(0.)
     xmat_inv = jnp.linalg.inv(_compute_xmatrix(basis))
@@ -151,9 +153,9 @@ def generate_dla(
         if idx1 != size:
             # Need to resize basis and xmat
             if verbosity > 0:
-                print(f'Resizing basis array to {max_size + 1024}')
+                print(f'Resizing basis array to {max_size + size_increment}')
 
-            max_size += 1024
+            max_size += size_increment
             basis = jnp.resize(basis, (max_size,) + basis.shape[1:]).at[size:].set(0.)
             xmat_inv = jnp.linalg.inv(_compute_xmatrix(basis))
             continue
