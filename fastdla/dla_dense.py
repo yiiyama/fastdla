@@ -1,75 +1,55 @@
 """Calculation of DLA based on dense matrices."""
 from collections.abc import Sequence
-from concurrent.futures import ALL_COMPLETED, FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Optional
 import time
 import numpy as np
-from numba import njit, objmode
+import jax
+from jax import Array
+import jax.numpy as jnp
 
 
-@njit
-def _commutator_norm(
-    op1: np.ndarray,
-    op2: np.ndarray
-) -> np.ndarray:
+@jax.jit
+def _commutator_norm(op1, op2):
     comm = op1 @ op2 - op2 @ op1
-    norm = np.sqrt(np.abs(np.trace(comm.conjugate().T @ comm)))
-    if np.isclose(norm, 0.):
-        return np.zeros_like(op1)
-    else:
-        return comm / norm
+    norm = jnp.sqrt(jnp.abs(jnp.trace(comm.conjugate().T @ comm)))
+    return jnp.where(jnp.isclose(norm, 0.), jnp.zeros_like(op1), comm / norm)
 
 
-def compute_xmatrix(basis: Sequence[np.ndarray]) -> np.ndarray:
-    basis = np.asarray(basis)
-    return np.einsum('ijk,ljk->il', basis.conjugate(), basis)
+_vcommutator_norm = jax.vmap(_commutator_norm, in_axes=[0, 0])
 
 
-@njit
-def _extend_xmatrix(xmat, new_op, basis):
-    current_size = xmat.shape[0]
-    new_xmat = np.empty((current_size + 1, current_size + 1), dtype=np.complex128)
-    new_xmat[:current_size, :current_size] = xmat
-    for ib in range(current_size):
-        ip = np.trace(basis[ib].conjugate().T @ new_op)
-        new_xmat[ib, -1] = ip
-        new_xmat[-1, ib] = ip.conjugate()
-    new_xmat[-1, -1] = 1.
-    return new_xmat
+@jax.jit
+def _compute_xmatrix(basis):
+    xmat = jnp.einsum('ijk,ljk->il', basis.conjugate(), basis)
+    idx = np.arange(basis.shape[0])
+    return xmat.at[idx, idx].set(1.)
 
 
-def extend_xmatrix(
-    xmat: np.ndarray,
-    new_op: np.ndarray,
-    basis: Sequence[np.ndarray]
-) -> np.ndarray:
-    return _extend_xmatrix(xmat, new_op, np.asarray(basis))
+def compute_xmatrix(basis: Sequence[Array]) -> Array:
+    return _compute_xmatrix(jnp.asarray(basis))
 
 
-@njit
+@jax.jit
 def _is_independent(new_op, basis, xmat_inv):
-    basis_size = basis.shape[0]
-    pidag_q = np.empty(basis_size, dtype=np.complex128)
-    is_zero = True
-    for ib in range(basis_size):
-        ip = np.trace(basis[ib].conjugate().T @ new_op)
-        pidag_q[ib] = ip
-        is_zero &= np.isclose(ip.real, 0.) and np.isclose(ip.imag, 0.)
+    def _residual(_new_op, _basis, _xmat_inv, _pidag_q):
+        # Residual calculation: subtract Pi*ai from Q directly
+        a_proj = _xmat_inv @ _pidag_q
+        residual = _new_op - jnp.sum(_basis * a_proj[:, None, None], axis=0)
+        return jnp.logical_not(jnp.allclose(residual, 0.))
 
-    if is_zero:
-        # Q is orthogonal to all basis vectors
-        return True
-
-    # Residual calculation: subtract Pi*ai from Q directly
-    a_proj = xmat_inv @ pidag_q
-    new_op -= np.sum(basis * a_proj[:, None, None], axis=0)
-    return not (np.allclose(new_op.real, 0.) and np.allclose(new_op.imag, 0.))
+    pidag_q = jnp.einsum('ijk,jk->i', basis.conjugate(), new_op)
+    return jax.lax.cond(
+        jnp.allclose(pidag_q, 0.),
+        lambda a, b, c, d: True,
+        _residual,
+        new_op, basis, xmat_inv, pidag_q
+    )
 
 
 def is_independent(
-    new_op: np.ndarray,
-    basis: Sequence[np.ndarray],
-    xmat_inv: Optional[np.ndarray] = None,
+    new_op: Array,
+    basis: Sequence[Array],
+    xmat_inv: Optional[Array] = None,
 ) -> bool:
     """
     Let the known dla basis ops be P0, P1, ..., Pn. The basis_matrix Π is a matrix formed by
@@ -87,94 +67,96 @@ def is_independent(
     to determine the linear independence of Q with respect to {Pi}.
     """
     if xmat_inv is None:
-        xmat_inv = np.linalg.inv(compute_xmatrix(basis))
+        xmat_inv = jnp.linalg.inv(compute_xmatrix(basis))
+    return _is_independent(new_op, jnp.asarray(basis), xmat_inv)
 
-    return _is_independent(new_op, np.asarray(basis), xmat_inv)
 
+@jax.jit
+def _main_loop_body(val):
+    ires, basis, size, xmat_inv, comms = val
 
-@njit
-def _main_loop(results, basis, xmat, verbosity):
-    num_results = results.shape[0]
-    xmat_inv = np.linalg.inv(xmat)
+    def _continue(_, _basis, _size, _xmat_inv):
+        return _basis, _size, _xmat_inv
 
-    for ires in range(num_results):
-        if verbosity > 2 and ires % 500 == 0:
-            dla_dim = basis.shape[0]
-            with objmode():
-                print(f'Processing SPV {ires}/{num_results} (DLA dim {dla_dim})..', flush=True)
+    def _update(_comm, _basis, _size, _xmat_inv):
+        _basis = _basis.at[_size].set(_comm)
+        _xmat_inv = jnp.linalg.inv(_compute_xmatrix(_basis))
+        return _basis, _size + 1, _xmat_inv
 
-        comm = results[ires]
-        if np.allclose(comm.real, 0.) and np.allclose(comm.imag, 0.):
-            continue
+    def _if_independent_update(_comm, _basis, _size, _xmat_inv):
+        return jax.lax.cond(
+            _is_independent(_comm, _basis, _xmat_inv),
+            _update,
+            _continue,
+            _comm, _basis, _size, _xmat_inv
+        )
 
-        if _is_independent(comm, basis, xmat_inv):
-            xmat = _extend_xmatrix(xmat, comm, basis)
-            xmat_inv = np.linalg.inv(xmat)
-            basis = np.concatenate((basis, comm[None, :, :]), axis=0)
-
-    return basis, xmat
+    comm = comms[ires]
+    return (ires + 1,) + jax.lax.cond(
+        jnp.allclose(comm, 0.),
+        _continue,
+        _if_independent_update,
+        comm, basis, size, xmat_inv
+    ) + (comms,)
 
 
 def generate_dla(
     generators: Sequence[np.ndarray],
     *,
     max_dim: Optional[int] = None,
-    min_tasks: int = 0,
-    max_workers: Optional[int] = None,
     verbosity: int = 0
 ) -> list[np.ndarray]:
-    basis = np.asarray(generators)
-    xmat = compute_xmatrix(basis)
+    if (size := len(generators)) == 0:
+        return []
 
-    with ThreadPoolExecutor(max_workers=max_workers) as executor:
-        commutators = {
-            executor.submit(_commutator_norm, op1, op2)
-            for i1, op1 in enumerate(basis)
-            for op2 in basis[:i1]
-        }
+    max_size = 1024
 
+    generators = jnp.asarray(generators)
+    basis = jnp.resize(generators, (max_size,) + generators.shape[1:]).at[size:].set(0.)
+
+    idx1, idx2 = np.array([[i1, i2] for i1 in range(size) for i2 in range(i1)]).T
+    comms = _vcommutator_norm(basis[idx1], basis[idx2])
+    icomm = 0
+
+    while True:
+        outer_loop_start = time.time()
         if verbosity > 1:
-            print(f'Starting with {len(commutators)} commutators..')
+            print(f'Evaluating {comms[icomm:].shape[0]} commutators for independence')
 
-        done, _ = wait(commutators, return_when=ALL_COMPLETED)
+        main_loop_start = time.time()
 
-        while commutators:
-            outer_loop_start = time.time()
-            if verbosity > 1:
-                print(f'Evaluating {len(done)}/{len(commutators)} commutators for independence')
+        xmat_inv = jnp.linalg.inv(_compute_xmatrix(basis))
+        icomm, basis, new_size, _, _ = jax.lax.while_loop(
+            lambda val: jnp.logical_and(
+                jnp.not_equal(val[0], comms.shape[0]),
+                jnp.not_equal(val[2], val[1].shape[0])
+            ),
+            _main_loop_body,
+            (icomm, basis, size, xmat_inv, comms)
+        )
 
-            commutators.difference_update(done)
-            results = np.array([fut.result() for fut in done])
+        if verbosity > 2:
+            print(f'Found {new_size - size} new ops in {time.time() - main_loop_start:.2f}s')
 
-            main_loop_start = time.time()
-            old_dim = basis.shape[0]
-            basis, xmat = _main_loop(results, basis, xmat, verbosity)
-            new_dim = basis.shape[0]
-            if verbosity > 2:
-                print(f'Found {new_dim - old_dim} new ops in {time.time() - main_loop_start:.2f}s')
+        if icomm != comms.shape[0]:
+            # Need to resize basis and xmat
+            max_size += 1024
+            basis = jnp.resize(basis, (max_size,) + basis.shape[1:]).at[new_size:].set(0.)
+        elif new_size == size:
+            break
+        elif max_dim is not None and new_size >= max_dim:
+            basis = basis[:max_dim]
+            break
+        else:
+            idx1, idx2 = np.array([[i1, i2] for i1 in range(size, new_size) for i2 in range(i1)]).T
+            comms = _vcommutator_norm(basis[idx1], basis[idx2])
+            icomm = 0
 
-            new_commutators = [
-                executor.submit(_commutator_norm, basis[ib1], basis[ib2])
-                for ib1 in range(old_dim, new_dim)
-                for ib2 in range(ib1)
-            ]
-            commutators.update(new_commutators)
-            if verbosity > 1 and new_commutators:
-                print(f'Adding {len(new_commutators)} commutators; total {len(commutators)}')
-            if verbosity > 0:
-                print(f'Current DLA dimension: {new_dim}')
-            if verbosity > 2:
-                print(f'Outer loop took {time.time() - outer_loop_start:.2f}s')
+        size = new_size
 
-            if max_dim is not None and new_dim >= max_dim:
-                basis = basis[:max_dim]
-                executor.shutdown(wait=False, cancel_futures=True)
-                break
+        if verbosity > 0:
+            print(f'Current DLA dimension: {size}')
+        if verbosity > 2:
+            print(f'Outer loop took {time.time() - outer_loop_start:.2f}s')
 
-            while True:
-                done, not_done = wait(commutators, return_when=FIRST_COMPLETED)
-                if len(not_done) == 0 or len(done) > min_tasks:
-                    break
-                time.sleep(1.)
-
-    return list(basis)
+    return [np.asarray(op) for op in basis[:size]]
