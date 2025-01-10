@@ -135,7 +135,7 @@ def z2lgt_u1_projector(num_fermions: int, charge: int) -> SparsePauliVector:
     return SparsePauliVector(paulis, coeffs)
 
 
-def z2lgt_dense_projector(gauss_eigvals: Sequence[int], charge: int):
+def z2lgt_dense_projector(gauss_eigvals: Sequence[int], charge: int, npmod=np):
     """Construct a full symmetry projector for the Z2 LGT model.
 
     The construction follows the projection algorithm for multiple symmetries proposed by LN. To
@@ -175,7 +175,7 @@ def z2lgt_dense_projector(gauss_eigvals: Sequence[int], charge: int):
     if abs(charge) > num_sites or charge % 2 != 0:
         raise ValueError('Invalid charge value')
 
-    projector = np.array(0.)
+    projector = npmod.array(0.)
 
     # Gauss's law projector
     # Start from the leftmost link-site-link and iteratively construct the full-size projector
@@ -187,61 +187,61 @@ def z2lgt_dense_projector(gauss_eigvals: Sequence[int], charge: int):
 
         local_projector = SparsePauliVector(['III', 'XZX'], coeffs).to_matrix()
         if isite_r == 0:
-            eigvals, eigvecs = np.linalg.eigh(local_projector)
-            indices = np.nonzero(np.isclose(eigvals, 1.))[0]
+            eigvals, eigvecs = npmod.linalg.eigh(local_projector)
+            indices = npmod.nonzero(npmod.isclose(eigvals, 1.))[0]
             projector = eigvecs[:, indices].T.conjugate()
         elif isite_r == num_sites - 1:
             # Transpose the rightmost X to position 0 simultaneously with matrix multiplication
             pdim = projector.shape[0]
             projector = projector.reshape((pdim, 2, 2 ** (2 * num_sites - 3), 2))
             local_projector = local_projector.reshape((2, 2, 2, 2, 2, 2))
-            projected_local = np.einsum('ijkl,lmjnop,qpkn->imqo', projector, local_projector,
-                                        projector.conjugate())  # (pdim, 2, pdim, 2)
+            projected_local = npmod.einsum('ijkl,lmjnop,qpkn->imqo', projector, local_projector,
+                                           projector.conjugate())  # (pdim, 2, pdim, 2)
             projected_local = projected_local.reshape((pdim * 2,) * 2)
-            eigvals, eigvecs = np.linalg.eigh(projected_local)
-            indices = np.nonzero(np.isclose(eigvals, 1.))[0]
+            eigvals, eigvecs = npmod.linalg.eigh(projected_local)
+            indices = npmod.nonzero(npmod.isclose(eigvals, 1.))[0]
             subspace = eigvecs[:, indices].T.conjugate().reshape(-1, pdim, 2)
             projector = projector.reshape(pdim, 2 ** (2 * num_sites - 1))
-            projector = np.einsum('ijk,jl->ilk', subspace, projector)
+            projector = npmod.einsum('ijk,jl->ilk', subspace, projector)
             projector = projector.reshape(-1, 2 ** (2 * num_sites))
         else:
             pdim = projector.shape[0]
             projector = projector.reshape((pdim, 2 ** (2 * isite_r), 2))
             local_projector = local_projector.reshape((2, 4, 2, 4))
-            projected_local = np.einsum('ijk,klmn,ojm->ilon', projector, local_projector,
-                                        projector.conjugate())  # (pdim, 4, pdim, 4)
+            projected_local = npmod.einsum('ijk,klmn,ojm->ilon', projector, local_projector,
+                                           projector.conjugate())  # (pdim, 4, pdim, 4)
             projected_local = projected_local.reshape((pdim * 4,) * 2)
-            eigvals, eigvecs = np.linalg.eigh(projected_local)
-            indices = np.nonzero(np.isclose(eigvals, 1.))[0]
+            eigvals, eigvecs = npmod.linalg.eigh(projected_local)
+            indices = npmod.nonzero(npmod.isclose(eigvals, 1.))[0]
             subspace = eigvecs[:, indices].T.conjugate().reshape(-1, pdim, 4)
             projector = projector.reshape(pdim, 2 ** (2 * isite_r + 1))
-            projector = np.einsum('ijk,jl->ilk', subspace, projector)
+            projector = npmod.einsum('ijk,jl->ilk', subspace, projector)
             projector = projector.reshape(-1, 2 ** (2 * isite_r + 3))
 
     # Charge projection
-    eigvals = np.zeros((2,) * num_sites, dtype=int)
-    z = np.array([1, -1])
+    eigvals = npmod.zeros((2,) * num_sites, dtype=int)
+    z = npmod.array([1, -1])
     for isite in range(num_sites):
-        eigvals += np.expand_dims(z, tuple(range(isite)) + tuple(range(isite + 1, num_sites)))
+        eigvals += npmod.expand_dims(z, tuple(range(isite)) + tuple(range(isite + 1, num_sites)))
     eigvals = eigvals.reshape(-1)
-    states = np.nonzero(eigvals == charge)[0]
+    states = npmod.nonzero(eigvals == charge)[0]
 
     # Project out the columns corresponding to wrong charge
     pdim = projector.shape[0]
     projector_reduced = projector.reshape(
-                        (pdim,) + (2,) * num_qubits
-                    ).transpose(
-                        (0,)
-                        + tuple(range(1, num_qubits + 1, 2))
-                        + tuple(range(2, num_qubits + 1, 2))
-                    ).reshape(
-                        (pdim,) + (2,) * num_sites + (2 ** num_sites,)
-                    )[..., states].reshape((pdim, -1))
+        (pdim,) + (2,) * num_qubits
+    ).transpose(
+        (0,)
+        + tuple(range(1, num_qubits + 1, 2))
+        + tuple(range(2, num_qubits + 1, 2))
+    ).reshape(
+        (pdim,) + (2,) * num_sites + (2 ** num_sites,)
+    )[..., states].reshape((pdim, -1))
     projected_charge = projector_reduced @ projector_reduced.conjugate().T
 
-    eigvals, eigvecs = np.linalg.eigh(projected_charge)
-    indices = np.nonzero(np.isclose(eigvals, 1.))[0]
+    eigvals, eigvecs = npmod.linalg.eigh(projected_charge)
+    indices = npmod.nonzero(npmod.isclose(eigvals, 1.))[0]
     subspace = eigvecs[:, indices].T.conjugate()
     projector = subspace @ projector
 
-    return projector
+    return np.asarray(projector)
