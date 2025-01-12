@@ -120,13 +120,13 @@ def _main_loop_body(val, verbosity=0):
         lambda: jnp.empty_like(comm),
         lambda: _commutator_norm(basis[next_idx1], basis[next_idx2])
     )
-    basis, size, xmat_inv = jax.lax.cond(
+    basis, size, xmat, xmat_inv = jax.lax.cond(
         jnp.allclose(comm, 0.),
         _continue,
         _if_independent_update,
-        comm, basis, size, xmat_inv
+        comm, basis, size, xmat, xmat_inv
     )
-    return (next_idx1, next_idx2, next_comm, basis, size, xmat_inv)
+    return (next_idx1, next_idx2, next_comm, basis, size, xmat, xmat_inv)
 
 
 def generate_dla(
