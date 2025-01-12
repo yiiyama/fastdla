@@ -16,9 +16,6 @@ def _commutator_norm(op1, op2):
     return jnp.where(jnp.isclose(norm, 0.), jnp.zeros_like(op1), comm / norm)
 
 
-_vcommutator_norm = jax.vmap(_commutator_norm, in_axes=[0, 0])
-
-
 @jax.jit
 def _compute_xmatrix(basis):
     xmat = jnp.einsum('ijk,ljk->il', basis.conjugate(), basis)
@@ -154,8 +151,8 @@ def generate_dla(
         comm = _commutator_norm(basis[idx1], basis[idx2])
         idx1, idx2, _, basis, new_size, xmat, _ = jax.lax.while_loop(
             lambda val: jnp.logical_and(
-                jnp.not_equal(val[0], val[3]),
-                jnp.not_equal(val[3], basis.shape[0])
+                jnp.not_equal(val[0], val[4]),
+                jnp.not_equal(val[4], basis.shape[0])
             ),
             main_loop_body,
             (idx1, idx2, comm, basis, size, xmat, xmat_inv)
