@@ -31,6 +31,12 @@ def compute_xmatrix(basis: Sequence[Array]) -> Array:
 
 
 @jax.jit
+def _extend_xmatrix(xmat, basis, idx):
+    new_col = jnp.einsum('ijk,jk->i', basis.conjugate(), basis[idx])
+    return xmat.at[:, idx].set(new_col).at[idx, :].set(new_col.conjugate())
+
+
+@jax.jit
 def _is_independent(new_op, basis, xmat_inv):
     def _residual(_new_op, _basis, _xmat_inv, _pidag_q):
         # Residual calculation: subtract Pi*ai from Q directly
@@ -74,7 +80,7 @@ def is_independent(
 
 @partial(jax.jit, static_argnames=['verbosity'])
 def _main_loop_body(val, verbosity=0):
-    idx1, idx2, basis, size, xmat_inv = val
+    idx1, idx2, comm, basis, size, xmat, xmat_inv = val
 
     if verbosity > 1:
         icomm = (idx1 * (idx1 + 1)) // 2 + idx2
@@ -86,33 +92,41 @@ def _main_loop_body(val, verbosity=0):
             lambda: None
         )
 
-    def _continue(_, _basis, _size, _xmat_inv):
-        return _basis, _size, _xmat_inv
+    def _continue(_, _basis, _size, _xmat, _xmat_inv):
+        return _basis, _size, _xmat, _xmat_inv
 
-    def _update(_comm, _basis, _size, _xmat_inv):
+    def _update(_comm, _basis, _size, _xmat, _xmat_inv):
         _basis = _basis.at[_size].set(_comm)
-        _xmat_inv = jnp.linalg.inv(_compute_xmatrix(_basis))
-        return _basis, _size + 1, _xmat_inv
+        _xmat = _extend_xmatrix(_xmat, _basis, _size)
+        _xmat_inv = jnp.linalg.inv(_xmat)
+        return _basis, _size + 1, _xmat, _xmat_inv
 
-    def _if_independent_update(_comm, _basis, _size, _xmat_inv):
+    def _if_independent_update(_comm, _basis, _size, _xmat, _xmat_inv):
         return jax.lax.cond(
             _is_independent(_comm, _basis, _xmat_inv),
             _update,
             _continue,
-            _comm, _basis, _size, _xmat_inv
+            _comm, _basis, _size, _xmat, _xmat_inv
         )
 
-    comm = _commutator_norm(basis[idx1], basis[idx2])
-    return jax.lax.cond(
+    next_idx1, next_idx2 = jax.lax.cond(
         jnp.equal(idx2 + 1, idx1),
         lambda: (idx1 + 1, 0),
         lambda: (idx1, idx2 + 1)
-    ) + jax.lax.cond(
+    )
+    # Compute the next commutator in parallel to the independence of the current one
+    next_comm = jax.lax.cond(
+        jnp.equal(next_idx1, basis.shape[0]),
+        lambda: jnp.empty_like(comm),
+        lambda: _commutator_norm(basis[next_idx1], basis[next_idx2])
+    )
+    basis, size, xmat_inv = jax.lax.cond(
         jnp.allclose(comm, 0.),
         _continue,
         _if_independent_update,
         comm, basis, size, xmat_inv
     )
+    return (next_idx1, next_idx2, next_comm, basis, size, xmat_inv)
 
 
 def generate_dla(
@@ -128,7 +142,8 @@ def generate_dla(
     max_size = size_increment
     generators = jnp.asarray(generators)
     basis = jnp.resize(generators, (max_size,) + generators.shape[1:]).at[size:].set(0.)
-    xmat_inv = jnp.linalg.inv(_compute_xmatrix(basis))
+    xmat = _compute_xmatrix(basis)
+    xmat_inv = jnp.linalg.inv(xmat)
     idx1, idx2 = 1, 0
 
     main_loop_body = partial(_main_loop_body, verbosity=verbosity)
@@ -136,13 +151,14 @@ def generate_dla(
     while True:
         main_loop_start = time.time()
 
-        idx1, idx2, basis, new_size, xmat_inv = jax.lax.while_loop(
+        comm = _commutator_norm(basis[idx1], basis[idx2])
+        idx1, idx2, _, basis, new_size, xmat, _ = jax.lax.while_loop(
             lambda val: jnp.logical_and(
                 jnp.not_equal(val[0], val[3]),
                 jnp.not_equal(val[3], basis.shape[0])
             ),
             main_loop_body,
-            (idx1, idx2, basis, size, xmat_inv)
+            (idx1, idx2, comm, basis, size, xmat, xmat_inv)
         )
 
         if verbosity > 0:
@@ -157,7 +173,8 @@ def generate_dla(
 
             max_size += size_increment
             basis = jnp.resize(basis, (max_size,) + basis.shape[1:]).at[size:].set(0.)
-            xmat_inv = jnp.linalg.inv(_compute_xmatrix(basis))
+            xmat = jnp.eye(max_size, dtype=xmat.dtype).at[:size, :size].set(xmat)
+            xmat_inv = jnp.linalg.inv(xmat)
             continue
 
         if max_dim is not None and size >= max_dim:
