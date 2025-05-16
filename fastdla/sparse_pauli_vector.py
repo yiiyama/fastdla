@@ -1,7 +1,7 @@
 """Purpose-specific implementation of a sparse Pauli operator."""
 from collections.abc import Sequence
 from numbers import Number
-from typing import Union
+from typing import Optional
 import numpy as np
 from scipy.sparse import csc_array
 
@@ -41,10 +41,10 @@ class SparsePauliVector:
 
     def __init__(
         self,
-        indices: Union[str, int, Sequence[str], Sequence[int]],
-        coeffs: Union[Number, Sequence[Number]],
-        num_qubits=None,
-        no_check=False
+        indices: str | int | Sequence[str] | Sequence[int],
+        coeffs: Number | Sequence[Number],
+        num_qubits: Optional[int] = None,
+        no_check: bool = False
     ):
         if no_check:
             self.indices = np.asarray(indices, dtype=np.uint64)
@@ -183,6 +183,58 @@ class SparsePauliVector:
         matrices = npmod.einsum(*args)
         matrices = matrices.reshape((self.num_terms, 2 ** self.num_qubits, 2 ** self.num_qubits))
         return npmod.sum(self.coeffs[:, None, None] * matrices, axis=0)
+
+
+class SparsePauliVectorArray:
+    """A container of SparsePauliVectors with concatenated data."""
+    MEM_ALLOC_UNIT = 1024
+
+    def __init__(
+        self,
+        vectors: Optional[list[SparsePauliVector]] = None,
+        initial_capacity: int = MEM_ALLOC_UNIT,
+    ):
+        self._indices = np.empty(initial_capacity, dtype=np.uint64)
+        self._coeffs = np.empty(initial_capacity, dtype=np.complex128)
+        self._ptrs = [0]
+
+        self.num_qubits = None
+
+        for vector in (vectors or []):
+            self.append(vector)
+
+    def _expand(self, new_capacity: int):
+        if (addition := new_capacity - self._indices.shape[0]) <= 0:
+            return
+        self._indices = np.concatenate([self._indices, np.empty(addition, dtype=np.uint64)])
+        self._coeffs = np.concatenate([self._coeffs, np.empty(addition, dtype=np.complex128)])
+
+    def append(self, vector: SparsePauliVector):
+        if self.num_qubits is None:
+            self.num_qubits = vector.num_qubits
+        elif vector.num_qubits != self.num_qubits:
+            raise ValueError('Inconsistent num_qubits')
+
+        if (new_end := self._ptrs[-1] + vector.num_terms) > self._indices.shape[0]:
+            self._expand((new_end // self.MEM_ALLOC_UNIT + 1) * self.MEM_ALLOC_UNIT)
+
+        self._ptrs.append(self._ptrs[-1] + vector.num_terms)
+        self._indices[self._ptrs[-2]:self._ptrs[-1]] = vector.indices
+        self._coeffs[self._ptrs[-2]:self._ptrs[-1]] = vector.coeffs
+
+    def __len__(self) -> int:
+        return len(self._ptrs) - 1
+
+    def __getitem__(self, idx: int) -> SparsePauliVector:
+        if idx < 0 or idx >= len(self._ptrs) - 1:
+            raise IndexError(f'Invalid vector index {idx}')
+
+        return SparsePauliVector(
+            self._indices[self._ptrs[idx]:self._ptrs[idx + 1]],
+            self._coeffs[self._ptrs[idx]:self._ptrs[idx + 1]],
+            self.num_qubits,
+            no_check=True
+        )
 
 
 def _uniquify(indices: np.ndarray, coeffs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
