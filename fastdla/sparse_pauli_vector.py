@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from numbers import Number
 from typing import Optional
 import numpy as np
-from scipy.sparse import csc_array
+from scipy.sparse import csr_array
 
 PAULI_NAMES = ['I', 'X', 'Y', 'Z']
 PAULI_INDICES = {'I': 0, 'X': 1, 'Y': 2, 'Z': 3}
@@ -38,6 +38,24 @@ class SparsePauliVector:
     def idx_to_str(idx: int, num_qubits: int) -> str:
         indices = ((idx // (4 ** np.arange(num_qubits)[::-1])) % 4).astype(int)
         return ''.join(PAULI_NAMES[i] for i in indices)
+
+    @classmethod
+    def switch_impl(cls, to: str):
+        if to == 'ref':
+            cls.__add__ = spv_sum
+            cls.__sub__ = lambda self, other: spv_sum(self, -other)
+            cls.__matmul__ = spv_prod
+            cls.commutator = spv_commutator
+            cls.dot = spv_innerprod
+        elif to == 'fast':
+            # pylint: disable-next=import-outside-toplevel
+            from fastdla.spv_fast import (spv_sum_fast, spv_prod_fast, spv_commutator_fast,
+                                          spv_innerprod_fast)
+            cls.__add__ = spv_sum_fast
+            cls.__sub__ = lambda self, other: spv_sum_fast(self, -other)
+            cls.__matmul__ = spv_prod_fast
+            cls.commutator = spv_commutator_fast
+            cls.dot = spv_innerprod_fast
 
     def __init__(
         self,
@@ -154,14 +172,17 @@ class SparsePauliVector:
     def commutator(self, other: 'SparsePauliVector') -> 'SparsePauliVector':
         return spv_commutator(self, other)
 
-    def to_csc(self) -> csc_array:
-        shape = (self.vlen, 1)
-        return csc_array((self.coeffs, self.indices, [0, self.num_terms]), shape=shape)
+    def dot(self, other: 'SparsePauliVector') -> complex:
+        return spv_innerprod(self, other)
+
+    def to_csr(self) -> csr_array:
+        shape = (1, self.vlen)
+        return csr_array((self.coeffs, self.indices, [0, self.num_terms]), shape=shape)
 
     @staticmethod
-    def from_csc(array: csc_array, num_qubits: int) -> 'SparsePauliVector':
-        if array.shape[1] != 1:
-            raise ValueError('Only a single-column array can be converted to SPV')
+    def from_csr(array: csr_array, num_qubits: int) -> 'SparsePauliVector':
+        if array.shape[0] != 1:
+            raise ValueError('Only a single-row array can be converted to SPV')
         return SparsePauliVector(array.indices, array.data, num_qubits, no_check=True)
 
     def to_dense(self) -> np.ndarray:
@@ -194,6 +215,8 @@ class SparsePauliVectorArray:
         vectors: Optional[list[SparsePauliVector]] = None,
         initial_capacity: int = MEM_ALLOC_UNIT,
     ):
+        initial_capacity = (((initial_capacity - 1) // self.MEM_ALLOC_UNIT + 1)
+                            * self.MEM_ALLOC_UNIT)
         self._indices = np.empty(initial_capacity, dtype=np.uint64)
         self._coeffs = np.empty(initial_capacity, dtype=np.complex128)
         self._ptrs = [0]
@@ -202,6 +225,14 @@ class SparsePauliVectorArray:
 
         for vector in (vectors or []):
             self.append(vector)
+
+    @property
+    def shape(self) -> tuple[int]:
+        return (len(self),) + (4,) * self.num_qubits
+
+    @property
+    def vlen(self) -> int:
+        return 4**self.num_qubits
 
     def _expand(self, new_capacity: int):
         if (addition := new_capacity - self._indices.shape[0]) <= 0:
@@ -236,6 +267,19 @@ class SparsePauliVectorArray:
             no_check=True
         )
 
+    def to_csr(self) -> csr_array:
+        return csr_array((self._coeffs, self._indices, self._ptrs),
+                         shape=(len(self), self.vlen))
+
+    @staticmethod
+    def from_csr(matrix: csr_array) -> 'SparsePauliVectorArray':
+        array = SparsePauliVectorArray(initial_capacity=matrix.data.shape[0])
+        array.num_qubits = int(np.round(np.emath.logn(4, matrix.shape[1])))
+        array._indices = matrix.indices
+        array._coeffs = matrix.data
+        array._ptrs = list(matrix.indptr)
+        return array
+
 
 def _uniquify(indices: np.ndarray, coeffs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
     """Uniquify a pauli list by summing up the cofficients of overlapping operators."""
@@ -254,7 +298,7 @@ def _uniquify(indices: np.ndarray, coeffs: np.ndarray) -> tuple[np.ndarray, np.n
 
 
 def spv_sum(*ops) -> SparsePauliVector:
-    """Sum of two sparse Pauli ops."""
+    """Sum of sparse Pauli ops."""
     indices, coeffs = _uniquify(
         np.concatenate([op.indices for op in ops]),
         np.concatenate([op.coeffs for op in ops])
@@ -300,25 +344,6 @@ def spv_commutator(o1: SparsePauliVector, o2: SparsePauliVector) -> SparsePauliV
     return spv_sum(*comms)
 
 
-def spvlist_to_csc(ops: Sequence[SparsePauliVector]) -> csc_array:
-    if len(ops) == 0:
-        raise ValueError('Cannot convert zero-length list to CSC')
-
-    shape = (ops[0].vlen, len(ops))
-    data = np.concatenate([op.coeffs for op in ops])
-    indices = np.concatenate([op.indices for op in ops])
-    indptr = np.cumsum([0] + [op.num_terms for op in ops])
-    return csc_array((data, indices, indptr), shape=shape)
-
-
-def csc_to_spvlist(matrix: csc_array) -> list[SparsePauliVector]:
-    num_qubits = int(np.round(np.emath.logn(4, matrix.shape[0])))
-    ops = []
-    for icol in range(matrix.shape[1]):
-        idx_begin, idx_end = matrix.indptr[icol:icol+2]
-        ops.append(SparsePauliVector(matrix.indices[idx_begin:idx_end],
-                                     matrix.data[idx_begin:idx_end],
-                                     num_qubits=num_qubits,
-                                     no_check=True))
-
-    return ops
+def spv_innerprod(o1: SparsePauliVector, o2: SparsePauliVector) -> complex:
+    common_entries = np.nonzero(o1.indices[:, None] - o2.indices[None, :] == 0)
+    return np.sum(np.conjugate(o1.data[common_entries[0]]) * o2.data[common_entries[1]])

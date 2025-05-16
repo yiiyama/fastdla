@@ -192,7 +192,7 @@ def _spv_innerprod_fast(
     return result
 
 
-def spv_innerprod_fast(lhs: SparsePauliVector, rhs: SparsePauliVector) -> SparsePauliVector:
+def spv_innerprod_fast(lhs: SparsePauliVector, rhs: SparsePauliVector) -> complex:
     if lhs.num_qubits != lhs.num_qubits:
         raise ValueError('Matmul between incompatible SparsePauliVectors')
     if lhs.num_terms * lhs.num_terms == 0:
