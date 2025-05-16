@@ -221,10 +221,9 @@ class SparsePauliVectorArray:
     ):
         initial_capacity = (((initial_capacity - 1) // self.MEM_ALLOC_UNIT + 1)
                             * self.MEM_ALLOC_UNIT)
-        self._indices = np.empty(initial_capacity, dtype=np.uint64)
-        self._coeffs = np.empty(initial_capacity, dtype=np.complex128)
-        self._ptrs = [0]
-
+        self.indices = np.empty(initial_capacity, dtype=np.uint64)
+        self.coeffs = np.empty(initial_capacity, dtype=np.complex128)
+        self.ptrs = [0]
         self.num_qubits = None
 
         for vector in (vectors or []):
@@ -238,11 +237,15 @@ class SparsePauliVectorArray:
     def vlen(self) -> int:
         return 4**self.num_qubits
 
+    @property
+    def capacity(self) -> int:
+        return self.indices.shape[0]
+
     def _expand(self, new_capacity: int):
-        if (addition := new_capacity - self._indices.shape[0]) <= 0:
+        if (addition := new_capacity - self.indices.shape[0]) <= 0:
             return
-        self._indices = np.concatenate([self._indices, np.empty(addition, dtype=np.uint64)])
-        self._coeffs = np.concatenate([self._coeffs, np.empty(addition, dtype=np.complex128)])
+        self.indices = np.concatenate([self.indices, np.empty(addition, dtype=np.uint64)])
+        self.coeffs = np.concatenate([self.coeffs, np.empty(addition, dtype=np.complex128)])
 
     def append(self, vector: SparsePauliVector):
         if self.num_qubits is None:
@@ -250,38 +253,48 @@ class SparsePauliVectorArray:
         elif vector.num_qubits != self.num_qubits:
             raise ValueError('Inconsistent num_qubits')
 
-        if (new_end := self._ptrs[-1] + vector.num_terms) > self._indices.shape[0]:
+        if (new_end := self.ptrs[-1] + vector.num_terms) > self.indices.shape[0]:
             self._expand((new_end // self.MEM_ALLOC_UNIT + 1) * self.MEM_ALLOC_UNIT)
 
-        self._ptrs.append(self._ptrs[-1] + vector.num_terms)
-        self._indices[self._ptrs[-2]:self._ptrs[-1]] = vector.indices
-        self._coeffs[self._ptrs[-2]:self._ptrs[-1]] = vector.coeffs
+        self.ptrs.append(self.ptrs[-1] + vector.num_terms)
+        self.indices[self.ptrs[-2]:self.ptrs[-1]] = vector.indices
+        self.coeffs[self.ptrs[-2]:self.ptrs[-1]] = vector.coeffs
+
+    def normalize(self) -> 'SparsePauliVectorArray':
+        normalized = SparsePauliVectorArray(initial_capacity=self.capacity)
+        normalized.num_qubits = self.num_qubits
+        normalized.indices = self.indices.copy()
+        normalized.ptrs = self.ptrs.copy()
+        for start, end in zip(self.ptrs[:-1], self.ptrs[1:]):
+            norm = np.sqrt(np.sum(np.square(np.abs(self.coeffs[start:end]))))
+            normalized.coeffs[start:end] = self.coeffs[start:end] / norm
+        return normalized
 
     def __len__(self) -> int:
-        return len(self._ptrs) - 1
+        return len(self.ptrs) - 1
 
     def __getitem__(self, idx: int) -> SparsePauliVector:
-        if idx < 0 or idx >= len(self._ptrs) - 1:
+        if idx < 0 or idx >= len(self.ptrs) - 1:
             raise IndexError(f'Invalid vector index {idx}')
 
         return SparsePauliVector(
-            self._indices[self._ptrs[idx]:self._ptrs[idx + 1]],
-            self._coeffs[self._ptrs[idx]:self._ptrs[idx + 1]],
+            self.indices[self.ptrs[idx]:self.ptrs[idx + 1]],
+            self.coeffs[self.ptrs[idx]:self.ptrs[idx + 1]],
             self.num_qubits,
             no_check=True
         )
 
     def to_csr(self) -> csr_array:
-        return csr_array((self._coeffs, self._indices, self._ptrs),
+        return csr_array((self.coeffs, self.indices, self.ptrs),
                          shape=(len(self), self.vlen))
 
     @staticmethod
     def from_csr(matrix: csr_array) -> 'SparsePauliVectorArray':
         array = SparsePauliVectorArray(initial_capacity=matrix.data.shape[0])
         array.num_qubits = int(np.round(np.emath.logn(4, matrix.shape[1])))
-        array._indices = matrix.indices
-        array._coeffs = matrix.data
-        array._ptrs = list(matrix.indptr)
+        array.indices = matrix.indices
+        array.coeffs = matrix.data
+        array.ptrs = list(matrix.indptr)
         return array
 
 
