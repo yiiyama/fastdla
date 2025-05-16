@@ -169,8 +169,12 @@ class SparsePauliVector:
     def __matmul__(self, other: 'SparsePauliVector') -> 'SparsePauliVector':
         return spv_prod(self, other)
 
-    def commutator(self, other: 'SparsePauliVector') -> 'SparsePauliVector':
-        return spv_commutator(self, other)
+    def commutator(
+        self,
+        other: 'SparsePauliVector',
+        normalize: bool = False
+    ) -> 'SparsePauliVector':
+        return spv_commutator(self, other, normalize)
 
     def dot(self, other: 'SparsePauliVector') -> complex:
         return spv_innerprod(self, other)
@@ -281,32 +285,47 @@ class SparsePauliVectorArray:
         return array
 
 
-def _uniquify(indices: np.ndarray, coeffs: np.ndarray) -> tuple[np.ndarray, np.ndarray]:
+def _uniquify(
+    indices: np.ndarray,
+    coeffs: np.ndarray,
+    normalize: bool
+) -> tuple[np.ndarray, np.ndarray]:
     """Uniquify a pauli list by summing up the cofficients of overlapping operators."""
     indices_uniq, unique_indices = np.unique(indices, return_inverse=True)
     if indices_uniq.shape[0] == indices.shape[0]:
         # indices is already unique
-        return indices_uniq, coeffs[np.argsort(unique_indices)]
+        coeffs_uniq = coeffs[np.argsort(unique_indices)]
+    else:
+        # indices is not unique -> merge duplicates
+        coeffs_matrix = np.zeros((coeffs.shape[0], indices_uniq.shape[0]), dtype=coeffs.dtype)
+        coeffs_matrix[np.arange(coeffs.shape[0]), unique_indices] = coeffs
+        coeffs_uniq = np.sum(coeffs_matrix, axis=0)
+        # remove terms with null coefficients
+        nonzero = np.nonzero(np.logical_not(np.isclose(coeffs_uniq, 0.)))[0]
+        indices_uniq = indices_uniq[nonzero]
+        coeffs_uniq = coeffs_uniq[nonzero]
 
-    # indices is not unique -> merge duplicates
-    coeffs_matrix = np.zeros((coeffs.shape[0], indices_uniq.shape[0]), dtype=coeffs.dtype)
-    coeffs_matrix[np.arange(coeffs.shape[0]), unique_indices] = coeffs
-    coeffs_uniq = np.sum(coeffs_matrix, axis=0)
-    # remove terms with null coefficients
-    nonzero = np.nonzero(np.logical_not(np.isclose(coeffs_uniq, 0.)))[0]
-    return indices_uniq[nonzero], coeffs_uniq[nonzero]
+    if normalize:
+        coeffs_uniq /= np.sqrt(np.sum(np.square(np.abs(coeffs_uniq))))
+
+    return indices_uniq, coeffs_uniq
 
 
-def spv_sum(*ops) -> SparsePauliVector:
+def spv_sum(*ops, normalize: bool = False) -> SparsePauliVector:
     """Sum of sparse Pauli ops."""
     indices, coeffs = _uniquify(
         np.concatenate([op.indices for op in ops]),
-        np.concatenate([op.coeffs for op in ops])
+        np.concatenate([op.coeffs for op in ops]),
+        normalize
     )
     return SparsePauliVector(indices, coeffs, ops[0].num_qubits, no_check=True)
 
 
-def spv_prod(o1: SparsePauliVector, o2: SparsePauliVector) -> SparsePauliVector:
+def spv_prod(
+    o1: SparsePauliVector,
+    o2: SparsePauliVector,
+    normalize: bool = False
+) -> SparsePauliVector:
     """Product of two sparse Pauli ops."""
     if o1.num_qubits != o2.num_qubits:
         raise ValueError('Matmul between incompatible SparsePauliOps')
@@ -324,12 +343,15 @@ def spv_prod(o1: SparsePauliVector, o2: SparsePauliVector) -> SparsePauliVector:
     pout = PAULI_PROD_INDEX[p1s, p2s]  # shape [num_terms, num_qubits]
     sout = np.sum(pout * (4 ** np.arange(o1.num_qubits)[None, ::-1]), axis=1)
     coeffs *= np.prod(PAULI_PROD_COEFF[p1s, p2s], axis=1)
-
-    indices, coeffs = _uniquify(sout, coeffs)
+    indices, coeffs = _uniquify(sout, coeffs, normalize)
     return SparsePauliVector(indices, coeffs, o1.num_qubits, no_check=True)
 
 
-def spv_commutator(o1: SparsePauliVector, o2: SparsePauliVector) -> SparsePauliVector:
+def spv_commutator(
+    o1: SparsePauliVector,
+    o2: SparsePauliVector,
+    normalize: bool = False
+) -> SparsePauliVector:
     o1h = o1.hpart
     o1a = o1.apart
     o2h = o2.hpart
@@ -341,7 +363,7 @@ def spv_commutator(o1: SparsePauliVector, o2: SparsePauliVector) -> SparsePauliV
     for lhs, rhs in [(o1h, o2a), (o1a, o2h)]:
         if lhs.num_terms * rhs.num_terms != 0:
             comms.append(2. * spv_prod(lhs, rhs).hpart)
-    return spv_sum(*comms)
+    return spv_sum(*comms, normalize=normalize)
 
 
 def spv_innerprod(o1: SparsePauliVector, o2: SparsePauliVector) -> complex:
