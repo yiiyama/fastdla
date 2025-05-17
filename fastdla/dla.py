@@ -17,7 +17,7 @@ def _spv_commutator_norm(
     coeffs2: np.ndarray,
     num_qubits: int
 ) -> tuple[np.ndarray, np.ndarray]:
-    indices, coeffs = _spv_commutator_fast(indices1, coeffs1, indices2, coeffs2, num_qubits)
+    indices, coeffs = _spv_commutator_fast(indices1, coeffs1, indices2, coeffs2, num_qubits, False)
     return indices, coeffs / np.sqrt(np.sum(np.square(np.abs(coeffs))))
 
 
@@ -102,7 +102,7 @@ def _is_independent(new_indices, new_coeffs, basis_indices, basis_coeffs, basis_
         end = basis_indptr[ib + 1]
         new_indices, new_coeffs = _spv_sum_fast(new_indices, new_coeffs,
                                                 basis_indices[start:end],
-                                                -a_val * basis_coeffs[start:end])
+                                                -a_val * basis_coeffs[start:end], False)
 
     return new_indices.shape[0] != 0
 
