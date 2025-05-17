@@ -120,6 +120,39 @@ def linear_independence(
 
 
 @njit
+def _orthogonalize(
+    new_indices: np.ndarray,
+    new_coeffs: np.ndarray,
+    basis_indices: np.ndarray,
+    basis_coeffs: np.ndarray,
+    basis_ptrs: list[int],
+) -> tuple[np.ndarray, np.ndarray]:
+    basis_size = len(basis_ptrs) - 1
+    concat_coeffs = np.zeros(basis_coeffs.shape[0] + new_coeffs.shape[0], dtype=basis_coeffs.dtype)
+
+    for ib in range(basis_size):
+        start, end = basis_ptrs[ib:ib + 2]
+        ip = _spv_innerprod_fast(basis_indices[start:end], basis_coeffs[start:end],
+                                 new_indices, new_coeffs)
+        if not np.isclose(ip, 0.):
+            concat_coeffs[start:end] = -ip * basis_coeffs[start:end]
+
+    concat_coeffs[basis_ptrs[-1]:] = new_coeffs
+    concat_indices = np.concatenate((basis_indices, new_indices))
+    return _uniquify_fast(concat_indices, concat_coeffs, False)
+
+
+def orthogonalize(
+    new_op: SparsePauliVector,
+    basis: SparsePauliVectorArray
+) -> SparsePauliVector:
+    """Subtract the subspace projection of an algebra element from itself."""
+    indices, coeffs = _orthogonalize(new_op.indices, new_op.coeffs,
+                                     basis.indices, basis.coeffs, basis.ptrs)
+    return SparsePauliVector(indices, coeffs, num_qubits=new_op.num_qubits, no_check=True)
+
+
+@njit
 def _if_independent_update(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, xinv):
     """Update the basis if (indices, coeffs) represent an independent operator."""
     if not _linear_independence(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, xinv):
