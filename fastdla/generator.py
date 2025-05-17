@@ -5,21 +5,22 @@ from fastdla.sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArra
 import fastdla._generator_impl.sparse as impl_sparse
 import fastdla._generator_impl.matrix as impl_matrix
 
-BasisType = Sequence[Any]
-XMatrixType = Any
+AlgebraElement = Any
+Basis = Sequence[AlgebraElement]
+InnerProductMatrix = Any
 
 
 def linear_independence(
-    new_op: Any,
-    basis: BasisType,
-    xinv: XMatrixType
+    op: Any,
+    basis: Basis,
+    xinv: InnerProductMatrix
 ) -> bool:
     """Check if the given operator is linearly independent from all other elements in the basis.
 
     Let the Lie algebra elements in the basis be P0, P1, ..., Pn. The basis_matrix Π is a matrix
     formed by stacking the column vectors {Pi}:
     Π = (P0, P1, ..., Pn).
-    If new_op Q is linearly dependent on {Pi}, there is a column vector of coefficients
+    If a new element Q is linearly dependent on {Pi}, there is a column vector of coefficients
     a = (a0, a1, ..., an)^T where
     Π a = Q.
     Multiply both sides with Π† and denote X = Π†Π to obtain
@@ -38,10 +39,28 @@ def linear_independence(
     Returns:
         True if Q is linearly independent from all elements of the basis.
     """
-    if isinstance(new_op, SparsePauliVector):
-        return impl_sparse.linear_independence(new_op, basis, xinv)
+    if isinstance(op, SparsePauliVector):
+        return impl_sparse.linear_independence(op, basis, xinv)
     else:
-        return impl_matrix.linear_independence(new_op, basis, xinv)
+        return impl_matrix.linear_independence(op, basis, xinv)
+
+
+def orthogonalize(
+    op: AlgebraElement,
+    basis: Basis
+) -> AlgebraElement:
+    """Subtract the subspace projection of an algebra element from itself.
+
+    Let the orthonormal basis be P0, P1, ..., Pn. The basis_matrix Π is a matrix formed by stacking
+    the column vectors {Pi}:
+    Π = (P0, P1, ..., Pn).
+    The orthogonal component of Q with respect to the basis is given by
+    T = Q - Π Π† Q.
+    """
+    if isinstance(op, SparsePauliVector):
+        return impl_sparse.orthogonalize(op, basis)
+    else:
+        return impl_matrix.orthogonalize(op, basis)
 
 
 def lie_closure(
@@ -52,8 +71,29 @@ def lie_closure(
     verbosity: int = 0,
     min_tasks: int = 0,
     max_workers: Optional[int] = None
-) -> BasisType:
+) -> Basis:
     """Compute the Lie closure of given generators.
+
+    Lie closure generation follows the standard algorithm of e.g. Algorithm 1 in Wiersema et al. npj
+    quant. info. 10 (1):
+
+    Input: Set of generators A
+    for a_i in A do
+        for a_j in A do
+            a_k = [a_i, a_j]
+            if a_k not in span(A) then
+                A <- A U {a_k}
+            endif
+        end
+    end
+
+    Specific implementations employ different optimization strategies in the loop implementations.
+
+    The algorithm to determine the linear independence of a_k with A is described in
+    linear_independence(). When we are allowed to modify the original generators so that A can be
+    orthonormalized, the linear independence can be determined through checking the existence of an
+    orthogonal component of a_k with respect to the subspace spanned by A. If such a component
+    exists, its normalized form is added to A in the update step.
 
     Args:
         generators: Lie algebra elements to compute the closure from.
