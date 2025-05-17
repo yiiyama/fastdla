@@ -80,6 +80,32 @@ def linear_independence(
 
 
 @jax.jit
+def _orthogonalize(
+    new_op: Array,
+    basis: Array
+) -> Array:
+    return new_op - jnp.tensordot(_innerprod(basis, new_op), basis, [[0], [0]])
+
+
+def orthogonalize(
+    new_op: Array,
+    basis: Array
+) -> Array:
+    """Subtract the subspace projection of an algebra element from itself.
+
+    See the docstring of generator.orthogonalize for details of the algorithm.
+
+    Args:
+        op: Lie algebra element Q to check the linear independence of.
+        projector:
+
+    Returns:
+        True if Q is linearly independent from all elements of the basis.
+    """
+    return _orthogonalize(new_op, basis)
+
+
+@jax.jit
 def _update_basis(op: Array, basis: Array, size: Array, xmat: Array) -> tuple[Array, int, Array]:
     """Append a new matrix to the basis and extend the X matrix accordingly.
 
@@ -100,7 +126,13 @@ def _update_basis(op: Array, basis: Array, size: Array, xmat: Array) -> tuple[Ar
 
 
 @jax.jit
-def _if_independent_update(op: Array, basis: Array, size: int, xmat: Array, xinv: Array):
+def _if_independent_update(
+    op: Array,
+    basis: Array,
+    size: int,
+    xmat: Array,
+    xinv: Array
+) -> tuple[Array, int, Array, Array]:
     """Update the basis and the X matrix with op if it is independent."""
     def _continue(_, _basis, _size, _xmat, _xinv):
         return _basis, _size, _xmat, _xinv
@@ -118,11 +150,32 @@ def _if_independent_update(op: Array, basis: Array, size: int, xmat: Array, xinv
     )
 
 
-@partial(jax.jit, static_argnames=['verbosity'])
-def _main_loop_body(val, verbosity=0):
-    """Compute the commutator and update the basis if linearly independent."""
-    # Current commutator indices, commutator, current basis and size, current X matrix and inverse
-    idx1, idx2, basis, basis_size, xmat, xinv = val
+@jax.jit
+def _if_orthogonal_update(
+    op: Array,
+    basis: Array,
+    size: int
+) -> tuple[Array, int]:
+    def _continue(_, _basis, _size):
+        return _basis, _size
+
+    def _update(_orth, _basis, _size):
+        _basis = _basis.at[_size].set(_normalize(_orth))
+        return _basis, _size + 1
+
+    orth = _orthogonalize(op, basis)
+    return jax.lax.cond(
+        jnp.allclose(orth, 0.),
+        _continue,
+        _update,
+        orth, basis, size
+    )
+
+
+@partial(jax.jit, static_argnames=['updater', 'verbosity'])
+def _main_loop_body(val, updater, verbosity=0):
+    """Compute the commutator and update the basis with orthogonal components."""
+    idx1, idx2, basis, basis_size, aux = val
 
     if verbosity > 1:
         icomm = (idx1 * (idx1 + 1)) // 2 + idx2
@@ -137,7 +190,9 @@ def _main_loop_body(val, verbosity=0):
     # Commutator
     comm = _commutator_norm(basis[idx1], basis[idx2])
     # If the current commutator is independent, update the basis and the X matrix
-    basis, basis_size, xmat, xinv = _if_independent_update(comm, basis, basis_size, xmat, xinv)
+    result = updater(comm, basis, basis_size, *aux)
+    basis, basis_size = result[:2]
+    aux = result[2:]
     # Indices for the next commutator
     next_idx1, next_idx2 = jax.lax.cond(
         jnp.equal(idx2 + 1, idx1),
@@ -145,7 +200,7 @@ def _main_loop_body(val, verbosity=0):
         lambda: (idx1, idx2 + 1)
     )
 
-    return next_idx1, next_idx2, basis, basis_size, xmat, xinv
+    return next_idx1, next_idx2, basis, basis_size, aux
 
 
 def lie_closure(
@@ -159,7 +214,7 @@ def lie_closure(
 
     Args:
         generators: Lie algebra elements to compute the closure from.
-        keep_original: Whether to keep the original generator elements. If False, only
+        keep_original: Whether to keep the original (normalized) generator elements. If False, only
             orthonormalized Lie algebra elements are kept in memory to speed up the calculation.
         max_dim: Cutoff for the dimension of the Lie closure. If set, the algorithm may be halted
             before a full closure is obtained.
@@ -174,25 +229,39 @@ def lie_closure(
     # Allocate basis and xmat arrays and compute the initial basis and X
     max_size = ((len(generators) - 1) // XMAT_ALLOC_UNIT + 1) * XMAT_ALLOC_UNIT
     basis = jnp.zeros((max_size,) + generators[0].shape, dtype=generators[0].dtype)
-    xmat = jnp.eye(max_size, dtype=np.complex128)
-    basis_size = 0
-    for op in generators:
-        basis, basis_size, xmat = _update_basis(_normalize(op), basis, basis_size, xmat)
-    xinv = jnp.linalg.inv(xmat)
+    basis = basis.at[0].set(_normalize(generators[0]))
+    basis_size = 1
 
-    main_loop_body = partial(_main_loop_body, verbosity=verbosity)
+    if keep_original:
+        xmat = jnp.eye(max_size, dtype=np.complex128)
+        xinv = xmat
+        for op in generators[1:]:
+            basis, basis_size, xmat, xinv = _if_independent_update(_normalize(op), basis,
+                                                                   basis_size, xmat, xinv)
+
+        main_loop_body = partial(_main_loop_body,
+                                 updater=_if_independent_update, verbosity=verbosity)
+        aux = (xmat, xinv)
+    else:
+        for op in generators[1:]:
+            basis, basis_size = _if_orthogonal_update(op, basis, basis_size)
+
+        main_loop_body = partial(_main_loop_body,
+                                 updater=_if_orthogonal_update, verbosity=verbosity)
+        aux = ()
+
     idx1, idx2 = 1, 0
     while True:  # Outer loop to handle memory reallocation
         main_loop_start = time.time()
         # Main (inner) loop: iteratively compute the next commutator and update the basis based on
         # the current one
-        idx1, idx2, basis, new_size, xmat, _ = jax.lax.while_loop(
+        idx1, idx2, basis, new_size, aux = jax.lax.while_loop(
             lambda val: jnp.logical_and(
                 jnp.not_equal(val[0], val[3]),  # idx1 == new_size -> commutator exhausted
                 jnp.not_equal(val[3], basis.shape[0])  # new_size == array size -> need reallocation
             ),
             main_loop_body,
-            (idx1, idx2, basis, basis_size, xmat, xinv)
+            (idx1, idx2, basis, basis_size, aux)
         )
 
         if verbosity > 0:
@@ -200,20 +269,24 @@ def lie_closure(
 
         basis_size = new_size
 
-        if idx1 != basis_size:
-            # Need to resize basis and xmat
-            if verbosity > 0:
-                print(f'Resizing basis array to {max_size + XMAT_ALLOC_UNIT}')
-
-            max_size += XMAT_ALLOC_UNIT
-            basis = jnp.resize(basis, (max_size,) + basis.shape[1:]).at[basis_size:].set(0.)
-            xmat = jnp.eye(max_size, dtype=xmat.dtype).at[:basis_size, :basis_size].set(xmat)
-            xinv = jnp.linalg.inv(xmat)
-            continue
+        if idx1 == basis_size:
+            # Computed all commutators
+            break
 
         if max_dim is not None and basis_size >= max_dim:
+            # Cutting off
             basis = basis[:max_dim]
+            break
 
-        break
+        # Need to resize basis and xmat
+        if verbosity > 0:
+            print(f'Resizing basis array to {max_size + XMAT_ALLOC_UNIT}')
+
+        max_size += XMAT_ALLOC_UNIT
+        basis = jnp.resize(basis, (max_size,) + basis.shape[1:]).at[basis_size:].set(0.)
+        if keep_original:
+            xmat = jnp.eye(max_size, dtype=xmat.dtype).at[:basis_size, :basis_size].set(xmat)
+            xinv = jnp.linalg.inv(xmat)
+            aux = (xmat, xinv)
 
     return np.asarray(basis[:basis_size])
