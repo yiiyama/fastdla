@@ -18,22 +18,25 @@ def _uniquify_fast(
     coeffs_unique = np.empty_like(coeffs)
     indices_unique[0] = indices_sorted[0]
     coeffs_unique[0] = coeffs_sorted[0]
-    normsq = np.square(coeffs_unique[0].real) + np.square(coeffs_unique[0].imag)
 
+    normsq = 0.
     iout = 0
     for index, coeff in zip(indices_sorted[1:], coeffs_sorted[1:]):
         if index == indices_unique[iout]:
             coeffs_unique[iout] += coeff
         else:
-            if not (np.isclose(coeffs_unique[iout].real, 0.)
-                    and np.isclose(coeffs_unique[iout].imag, 0.)):
+            out_real = coeffs_unique[iout].real
+            out_imag = coeffs_unique[iout].imag
+            if not (np.isclose(out_real, 0.) and np.isclose(out_imag, 0.)):
+                normsq += np.square(out_real) + np.square(out_imag)
                 iout += 1
             indices_unique[iout] = index
             coeffs_unique[iout] = coeff
-            normsq += np.square(coeff.real) + np.square(coeff.imag)
 
-    if not (np.isclose(coeffs_unique[iout].real, 0.)
-            and np.isclose(coeffs_unique[iout].imag, 0.)):
+    out_real = coeffs_unique[iout].real
+    out_imag = coeffs_unique[iout].imag
+    if not (np.isclose(out_real, 0.) and np.isclose(out_imag, 0.)):
+        normsq += np.square(out_real) + np.square(out_imag)
         iout += 1
 
     if normalize:
