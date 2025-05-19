@@ -62,7 +62,7 @@ def _linear_independence(
 def linear_independence(
     new_op: Array,
     basis: Array,
-    xinv: Array
+    xinv: Optional[Array] = None
 ) -> bool:
     """Check if the given operator is linearly independent from all other elements in the basis.
 
@@ -76,6 +76,9 @@ def linear_independence(
     Returns:
         True if Q is linearly independent from all elements of the basis.
     """
+    if xinv is None:
+        xinv = jnp.linalg.inv(_innerprod(basis, basis))
+
     return _linear_independence(new_op, basis, xinv)
 
 
