@@ -8,7 +8,7 @@ import jax
 from jax import Array
 import jax.numpy as jnp
 
-XMAT_ALLOC_UNIT = 1024
+BASIS_ALLOC_UNIT = 1024
 
 
 @jax.jit
@@ -226,8 +226,8 @@ def lie_closure(
     if len(generators) == 0:
         return np.array([], dtype=np.complex128)
 
-    # Allocate basis and xmat arrays and compute the initial basis and X
-    max_size = ((len(generators) - 1) // XMAT_ALLOC_UNIT + 1) * XMAT_ALLOC_UNIT
+    # Allocate the basis array and compute the initial basis
+    max_size = ((len(generators) - 1) // BASIS_ALLOC_UNIT + 1) * BASIS_ALLOC_UNIT
     basis = jnp.zeros((max_size,) + generators[0].shape, dtype=generators[0].dtype)
     basis = basis.at[0].set(_normalize(generators[0]))
     basis_size = 1
@@ -280,9 +280,9 @@ def lie_closure(
 
         # Need to resize basis and xmat
         if verbosity > 0:
-            print(f'Resizing basis array to {max_size + XMAT_ALLOC_UNIT}')
+            print(f'Resizing basis array to {max_size + BASIS_ALLOC_UNIT}')
 
-        max_size += XMAT_ALLOC_UNIT
+        max_size += BASIS_ALLOC_UNIT
         basis = jnp.resize(basis, (max_size,) + basis.shape[1:]).at[basis_size:].set(0.)
         if keep_original:
             xmat = jnp.eye(max_size, dtype=xmat.dtype).at[:basis_size, :basis_size].set(xmat)
