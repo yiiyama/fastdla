@@ -13,7 +13,7 @@ InnerProductMatrix = Any
 def linear_independence(
     op: Any,
     basis: Basis,
-    xinv: InnerProductMatrix
+    xinv: Optional[InnerProductMatrix] = None
 ) -> bool:
     """Check if the given operator is linearly independent from all other elements in the basis.
 
@@ -34,7 +34,7 @@ def linear_independence(
     Args:
         new_op: Lie algebra element Q to check the linear independence of.
         basis: The basis (list of linearly independent elements) of the Lie Algebra.
-        xinv: Inverse of the X matrix.
+        xinv: Inverse of the X matrix. If not given, computed from basis.
 
     Returns:
         True if Q is linearly independent from all elements of the basis.

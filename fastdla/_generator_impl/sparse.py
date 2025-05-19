@@ -7,7 +7,7 @@ from numba import njit, objmode
 from fastdla.sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
 from fastdla.spv_fast import _uniquify_fast, _spv_commutator_fast, _spv_innerprod_fast
 
-XMAT_ALLOC_UNIT = 1024
+BASIS_ALLOC_UNIT = 1024
 MEM_ALLOC_UNIT = SparsePauliVectorArray.MEM_ALLOC_UNIT
 
 
@@ -100,7 +100,7 @@ def _linear_independence(
 def linear_independence(
     new_op: SparsePauliVector,
     basis: SparsePauliVectorArray,
-    xinv: np.ndarray
+    xinv: Optional[np.ndarray] = None
 ) -> bool:
     """Check if the given operator is linearly independent from all other elements in the basis.
 
@@ -114,6 +114,19 @@ def linear_independence(
     Returns:
         True if Q is linearly independent from all elements of the basis.
     """
+    if xinv is None:
+        xmat = np.eye(len(basis), dtype=basis.coeffs.dtype)
+        if len(basis) == 1:
+            # _update_xmatrix compilation fails if rows and cols are empty
+            xinv = xmat
+        else:
+            rows, cols = [], []
+            for row in range(len(basis) - 1):
+                rows += [row] * (len(basis) - 1 - row)
+                cols += list(range(row + 1, len(basis)))
+            _update_xmatrix(xmat, basis.indices, basis.coeffs, basis.ptrs, rows, cols)
+            xinv = np.linalg.inv(xmat)
+
     return _linear_independence(new_op.indices, new_op.coeffs,
                                 basis.indices, basis.coeffs, basis.ptrs,
                                 xinv)
@@ -153,10 +166,10 @@ def orthogonalize(
 
 
 @njit
-def _if_independent_update(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, xinv):
+def _if_independent_update(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, xmat, xinv):
     """Update the basis if (indices, coeffs) represent an independent operator."""
     if not _linear_independence(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, xinv):
-        return False
+        return basis_indices, basis_coeffs, xmat, xinv
 
     if basis_ptrs[-1] + indices.shape[0] > basis_indices.shape[0]:
         # At maximum capacity -> reallocate
@@ -172,7 +185,18 @@ def _if_independent_update(indices, coeffs, basis_indices, basis_coeffs, basis_p
     basis_ptrs.append(basis_ptrs[-1] + indices.shape[0])
     basis_indices[basis_ptrs[-2]:basis_ptrs[-1]] = indices
     basis_coeffs[basis_ptrs[-2]:basis_ptrs[-1]] = coeffs
-    return True
+
+    # Add a column to the X matrix
+    basis_size = len(basis_ptrs) - 1
+    if basis_size > xmat.shape[0]:
+        new_xmat = np.eye(xmat.shape[0] + BASIS_ALLOC_UNIT, dtype=xmat.dtype)
+        new_xmat[:xmat.shape[0], :xmat.shape[0]] = xmat
+        xmat = new_xmat
+    rows = list(range(basis_size - 1))  # rows above the diagonal at column (size - 1)
+    cols = [basis_size - 1] * (basis_size - 1)
+    _update_xmatrix(xmat, basis_indices, basis_coeffs, basis_ptrs, rows, cols)
+    xinv = np.linalg.inv(xmat[:basis_size, :basis_size])
+    return basis_indices, basis_coeffs, xmat, xinv
 
 
 @njit
@@ -212,24 +236,17 @@ def _update_loop(
         prev_coeffs_conj = coeffs.conjugate()
 
         # Check linear independence and update the basis_* arrays
-        if _if_independent_update(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, xinv):
-            # Add a column to the X matrix
-            basis_size = len(basis_ptrs) - 1
-            if basis_size > xmat.shape[0]:
-                new_xmat = np.eye(xmat.shape[0] + XMAT_ALLOC_UNIT, dtype=xmat.dtype)
-                new_xmat[:xmat.shape[0], :xmat.shape[0]] = xmat
-                xmat = new_xmat
-            rows = list(range(basis_size - 1))  # rows above the diagonal at column (size - 1)
-            cols = [basis_size - 1] * (basis_size - 1)
-            _update_xmatrix(xmat, basis_indices, basis_coeffs, basis_ptrs, rows, cols)
-            xinv = np.linalg.inv(xmat[:basis_size, :basis_size])
+        basis_indices, basis_coeffs, xmat, xinv = _if_independent_update(
+            indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, xmat, xinv
+        )
 
-    return basis_indices, basis_coeffs, basis_ptrs, xmat
+    return basis_indices, basis_coeffs, xmat
 
 
 def lie_closure(
     generators: SparsePauliVectorArray,
     *,
+    keep_original: bool = True,
     max_dim: Optional[int] = None,
     verbosity: int = 0,
     min_tasks: int = 0,
@@ -249,31 +266,45 @@ def lie_closure(
     Returns:
         A basis of the Lie closure.
     """
-    basis = generators.normalize()
-    # Allocate a large matrix to embed X in
-    xmat_size = ((len(basis) - 1) // XMAT_ALLOC_UNIT + 1) * XMAT_ALLOC_UNIT
-    xmat = np.eye(xmat_size, dtype=np.complex128)
-    ngen = len(basis)
-    rows = sum(([i] * (ngen - i - 1) for i in range(ngen - 1)), [])  # e.g. 0,0,0,1,1,2 (ngen=4)
-    cols = sum((list(range(i + 1, ngen)) for i in range(ngen - 1)), [])  # e.g. 1,2,3,1,2,1 (ngen=4)
-    _update_xmatrix(xmat, basis.indices, basis.coeffs, basis.ptrs, rows, cols)
+    if len(generators) == 0:
+        return generators
+
+    # Allocate the basis and X arrays and compute the initial basis
+    basis = SparsePauliVectorArray([generators[0].normalize()])
+
+    if keep_original:
+        # Allocate a large matrix to embed X in
+        xmat_size = ((len(basis) - 1) // BASIS_ALLOC_UNIT + 1) * BASIS_ALLOC_UNIT
+        xmat = np.eye(xmat_size, dtype=np.complex128)
+        xinv = xmat
+        for op in generators[1:]:
+            basis.indices, basis.coeffs, xmat, xinv = _if_independent_update(
+                op.indices, op.coeffs, basis.indices, basis.coeffs, basis.ptrs, xmat, xinv
+            )
+    else:
+        raise NotImplementedError()
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = set()
-        for row, col in zip(rows, cols):
-            row_start, row_end = basis.ptrs[row:row + 2]
-            col_start, col_end = basis.ptrs[col:col + 2]
-            futures.add(
-                executor.submit(
-                    _spv_commutator_fast,
-                    basis.indices[row_start:row_end],
-                    basis.coeffs[row_start:row_end],
-                    basis.indices[col_start:col_end],
-                    basis.coeffs[col_start:col_end],
-                    basis.num_qubits,
-                    True
-                )
-            )
+
+        def calculate_commutators(lhs_first):
+            for ib1 in range(lhs_first, len(basis)):
+                start, end = basis.ptrs[ib1:ib1 + 2]
+                lhs_indices = basis.indices[start:end]
+                lhs_coeffs = basis.coeffs[start:end]
+                for ib2 in range(ib1):
+                    start, end = basis.ptrs[ib2:ib2 + 2]
+                    rhs_indices = basis.indices[start:end]
+                    rhs_coeffs = basis.coeffs[start:end]
+                    futures.add(
+                        executor.submit(
+                            _spv_commutator_fast,
+                            lhs_indices, lhs_coeffs, rhs_indices, rhs_coeffs, basis.num_qubits, True
+                        )
+                    )
+
+        # Initial set of commutators of the original generators
+        calculate_commutators(1)
 
         if verbosity > 1:
             print(f'Starting with {len(futures)} commutators..')
@@ -308,7 +339,7 @@ def lie_closure(
 
             main_loop_start = time.time()
             old_dim = len(basis)
-            basis.indices, basis.coeffs, basis.ptrs, xmat = _update_loop(
+            basis.indices, basis.coeffs, xmat = _update_loop(
                 result_indices, result_coeffs, basis.indices, basis.coeffs, basis.ptrs, xmat,
                 verbosity
             )
@@ -317,25 +348,7 @@ def lie_closure(
                 print(f'Found {new_dim - old_dim} new ops in {time.time() - main_loop_start:.2f}s')
 
             # Calculate the commutators between the new basis elements and all others
-            for ib1 in range(old_dim, new_dim):
-                start, end = basis.ptrs[ib1:ib1 + 2]
-                lhs_indices = basis.indices[start:end]
-                lhs_coeffs = basis.coeffs[start:end]
-                for ib2 in range(ib1):
-                    start, end = basis.ptrs[ib2:ib2 + 2]
-                    rhs_indices = basis.indices[start:end]
-                    rhs_coeffs = basis.coeffs[start:end]
-                    futures.add(
-                        executor.submit(
-                            _spv_commutator_fast,
-                            lhs_indices,
-                            lhs_coeffs,
-                            rhs_indices,
-                            rhs_coeffs,
-                            basis.num_qubits,
-                            True
-                        )
-                    )
+            calculate_commutators(old_dim)
 
             if verbosity > 1 and new_dim > old_dim:
                 num_added = (new_dim + old_dim - 1) * (new_dim - old_dim) // 2
