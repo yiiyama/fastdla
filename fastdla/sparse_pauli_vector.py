@@ -229,6 +229,17 @@ class SparsePauliVectorArray:
         for vector in (vectors or []):
             self.append(vector)
 
+    def __str__(self) -> str:
+        opstr = '[\n'
+        opstr += ',\n'.join(f'  {str(self[i])}' for i in range(min(4, len(self))))
+        if len(self) > 4:
+            opstr += ',\n...,'
+        opstr += '\n]'
+        return opstr
+
+    def __repr__(self) -> str:
+        return f'SparsePauliVectorArray({len(self)} vectors, num_qubits={self.num_qubits})'
+
     @property
     def shape(self) -> tuple[int]:
         return (len(self),) + (4,) * self.num_qubits
@@ -273,8 +284,12 @@ class SparsePauliVectorArray:
     def __len__(self) -> int:
         return len(self.ptrs) - 1
 
-    def __getitem__(self, idx: int) -> SparsePauliVector:
-        if idx < 0 or idx >= len(self.ptrs) - 1:
+    def __getitem__(self, idx: int | slice) -> SparsePauliVector:
+        if isinstance(idx, slice):
+            return [self[i] for i in range(*idx.indices(len(self)))]
+        if idx < 0:
+            idx += len(self)
+        if idx < 0 or idx >= len(self):
             raise IndexError(f'Invalid vector index {idx}')
 
         return SparsePauliVector(
