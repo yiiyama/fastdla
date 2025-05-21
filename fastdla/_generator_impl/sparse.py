@@ -9,9 +9,9 @@ from fastdla.spv_fast import _uniquify_fast, _spv_commutator_fast, _spv_innerpro
 
 BASIS_ALLOC_UNIT = 1024
 MEM_ALLOC_UNIT = SparsePauliVectorArray.MEM_ALLOC_UNIT
+DEBUG_NO_JIT = False
 
 
-@njit
 def _update_xmatrix(
     xmat: np.ndarray,
     basis_indices: np.ndarray,
@@ -45,7 +45,10 @@ def _update_xmatrix(
         xmat[col, row] = ip.conjugate()
 
 
-@njit
+if not DEBUG_NO_JIT:
+    _update_xmatrix = njit(_update_xmatrix)
+
+
 def _linear_independence(
     new_indices: np.ndarray,
     new_coeffs: np.ndarray,
@@ -97,6 +100,10 @@ def _linear_independence(
     return indices.shape[0] != 0
 
 
+if not DEBUG_NO_JIT:
+    _linear_independence = njit(_linear_independence)
+
+
 def linear_independence(
     new_op: SparsePauliVector,
     basis: SparsePauliVectorArray,
@@ -132,7 +139,6 @@ def linear_independence(
                                 xinv)
 
 
-@njit
 def _orthogonalize(
     new_indices: np.ndarray,
     new_coeffs: np.ndarray,
@@ -155,6 +161,10 @@ def _orthogonalize(
     return _uniquify_fast(concat_indices, concat_coeffs, False)
 
 
+if not DEBUG_NO_JIT:
+    _orthogonalize = njit(_orthogonalize)
+
+
 def orthogonalize(
     new_op: SparsePauliVector,
     basis: SparsePauliVectorArray
@@ -165,24 +175,26 @@ def orthogonalize(
     return SparsePauliVector(indices, coeffs, num_qubits=new_op.num_qubits, no_check=True)
 
 
-@njit
 def _if_independent_update(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, xmat, xinv):
     """Update the basis if (indices, coeffs) represent an independent operator."""
     if not _linear_independence(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, xinv):
         return basis_indices, basis_coeffs, xmat, xinv
 
-    if basis_ptrs[-1] + indices.shape[0] > basis_indices.shape[0]:
+    next_ptr = basis_ptrs[-1] + indices.shape[0]
+    if next_ptr > basis_indices.shape[0]:
         # At maximum capacity -> reallocate
+        additional_capacity = (((next_ptr - basis_indices.shape[0]) // MEM_ALLOC_UNIT + 1)
+                               * MEM_ALLOC_UNIT)
         basis_indices = np.concatenate((
             basis_indices,
-            np.empty(MEM_ALLOC_UNIT, dtype=basis_indices.dtype)
+            np.empty(additional_capacity, dtype=basis_indices.dtype)
         ))
         basis_coeffs = np.concatenate((
             basis_coeffs,
-            np.empty(MEM_ALLOC_UNIT, dtype=basis_coeffs.dtype)
+            np.empty(additional_capacity, dtype=basis_coeffs.dtype)
         ))
 
-    basis_ptrs.append(basis_ptrs[-1] + indices.shape[0])
+    basis_ptrs.append(next_ptr)
     basis_indices[basis_ptrs[-2]:basis_ptrs[-1]] = indices
     basis_coeffs[basis_ptrs[-2]:basis_ptrs[-1]] = coeffs
 
@@ -199,7 +211,10 @@ def _if_independent_update(indices, coeffs, basis_indices, basis_coeffs, basis_p
     return basis_indices, basis_coeffs, xmat, xinv
 
 
-@njit
+if not DEBUG_NO_JIT:
+    _if_independent_update = njit(_if_independent_update)
+
+
 def _update_loop(
     result_indices: list[np.ndarray],
     result_coeffs: list[np.ndarray],
@@ -241,6 +256,10 @@ def _update_loop(
         )
 
     return basis_indices, basis_coeffs, xmat
+
+
+if not DEBUG_NO_JIT:
+    _update_loop = njit(_update_loop)
 
 
 def lie_closure(
