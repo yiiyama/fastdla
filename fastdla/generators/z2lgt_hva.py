@@ -2,12 +2,12 @@
 from collections.abc import Sequence
 from typing import Optional
 import numpy as np
-from ..sparse_pauli_vector import SparsePauliVector
+from ..sparse_pauli_vector import PAULIS, SparsePauliVector
 
 
 def z2lgt_hva_generators(num_fermions: int) -> list[SparsePauliVector]:
-    """Construct generators of the HVA for the Z2 LGT model for the given number of staggered
-    fermions."""
+    """Construct generators of the HVA for the Z2 LGT model with periodic boundary condition for the
+    given number of staggered fermions."""
     num_qubits = 4 * num_fermions
 
     generators = []
@@ -95,8 +95,8 @@ def z2lgt_gauss_projector(
     """Construct the Gauss's law projector for the Z2 LGT model.
 
     Physical states of the Z2 LGT model must be eigenstates of G_n = X_{n-1,n}Z_{n}X_{n1,n+1}. Given
-    an eigenvalue for each G_n, we can construct a projector to its subspace as a sum of Pauli
-    ops. The overall projector will then be a product of all such projectors.
+    an eigenvalue for each G_n, we can construct a projector to its subspace as a sum of Pauli ops.
+    The overall projector will then be a product of all such projectors.
     """
     if (num_sites := len(eigvals)) % 2 or not all(abs(ev) == 1 for ev in eigvals):
         raise ValueError('There must be an even number of charges with values +-1')
@@ -152,19 +152,45 @@ def z2lgt_u1_projector(num_fermions: int, charge: int) -> SparsePauliVector:
     return SparsePauliVector(paulis, coeffs)
 
 
-# def z2lgt_charge_projector(num_fermions: int, eigval: int) -> SparsePauliVector:
-#     if eigval not in [1, -1]:
-#         raise ValueError('Invalid C eigenvalue')
+def z2lgt_translation_projector(num_fermions: int, iroot: int) -> SparsePauliVector:
+    """Construct the translation projector for the Z2 LGT model.
 
+    The Z2 LGT HVA generators commute with the translation operator T, which shifts state indices
+    by 1 fermion unit (2 sites, 4 qubits). Therefore, if the initial state of a VQA is a translation
+    eigenstate, the variational evolution of the state stays within the same eigenspace.
+    Since it is quite nontrivial to directly express the translation operator eigenspace projectors
+    in terms of Pauli product sums, we first construct the projectors as dense matrices, then
+    compute the inner products with Paulis.
+    """
+    if iroot < 0 or iroot >= num_fermions:
+        raise ValueError('Invalid iroot value')
 
-# def z2lgt_parity_projector(num_fermions: int, eigval: int) -> SparsePauliVector:
-#     if eigval not in [1, -1]:
-#         raise ValueError('Invalid P eigenvalue')
+    num_qubits = 4 * num_fermions
 
+    # Construct the translation eigenstates from computational basis states
+    eigenstates = np.eye(2 ** num_qubits, dtype=np.complex128) / num_fermions
+    powers = 1 << np.arange(num_qubits)[::-1]
+    indices = np.arange(2 ** num_qubits)
+    indices_bin = (indices[:, None] // powers[None, :]) % 2
+    for shift in range(1, num_fermions):
+        shifted_indices = np.sum(np.roll(indices_bin, 4 * shift, axis=1) * powers[None, :], axis=1)
+        phase_factor = np.exp(-2.j * np.pi * iroot * shift / num_fermions)
+        eigenstates[shifted_indices, indices] += phase_factor / num_fermions
+    # Eigenstates = (|u_0>, |u_1>, ...)
+    # Projector = sum_j |u_j><u_j|
+    projector = eigenstates @ eigenstates.conjugate().T
 
-# def z2lgt_translation_projector(num_fermions: int, iroot: int) -> SparsePauliVector:
-#     if iroot not in list(range(num_fermions)):
-#         raise ValueError('Invalid iroot value')
+    # Pauli decomposition through iterative partial traces
+    projector = projector.reshape((2,) * (2 * num_qubits))
+    for iq in range(num_qubits):
+        projector = np.tensordot(PAULIS, projector, [[1, 2], [num_qubits, iq]]) / 2.
+
+    # Sparsify
+    projector = np.reshape(np.transpose(projector), -1)
+    paulis = np.nonzero(projector)[0]
+    coeffs = projector[paulis]
+
+    return SparsePauliVector(paulis, coeffs)
 
 
 def z2lgt_dense_projector(
