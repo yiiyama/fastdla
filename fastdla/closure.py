@@ -1,9 +1,8 @@
+# pylint: disable=import-outside-toplevel
 """Generator of Lie closure."""
 from collections.abc import Sequence
 from typing import Any, Optional
 from fastdla.sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
-import fastdla._generator_impl.sparse as impl_sparse
-import fastdla._generator_impl.matrix as impl_matrix
 
 AlgebraElement = Any
 Basis = Sequence[AlgebraElement]
@@ -40,9 +39,11 @@ def linear_independence(
         True if Q is linearly independent from all elements of the basis.
     """
     if isinstance(op, SparsePauliVector):
-        return impl_sparse.linear_independence(op, basis, xinv)
+        from fastdla._closure_impl.sparse_numba import linear_independence as fn
     else:
-        return impl_matrix.linear_independence(op, basis, xinv)
+        from fastdla._closure_impl.matrix_jax import linear_independence as fn
+
+    return fn(op, basis, xinv)
 
 
 def orthogonalize(
@@ -58,9 +59,11 @@ def orthogonalize(
     T = Q - Π Π† Q.
     """
     if isinstance(op, SparsePauliVector):
-        return impl_sparse.orthogonalize(op, basis)
+        from fastdla._closure_impl.sparse_numba import orthogonalize as fn
     else:
-        return impl_matrix.orthogonalize(op, basis)
+        from fastdla._closure_impl.matrix_jax import orthogonalize as fn
+
+    return fn(op, basis)
 
 
 def lie_closure(
@@ -69,8 +72,7 @@ def lie_closure(
     keep_original: bool = True,
     max_dim: Optional[int] = None,
     verbosity: int = 0,
-    min_tasks: int = 0,
-    max_workers: Optional[int] = None
+    **kwargs
 ) -> Basis:
     """Compute the Lie closure of given generators.
 
@@ -112,9 +114,11 @@ def lie_closure(
     """
     if isinstance(generators, list) and isinstance(generators[0], SparsePauliVector):
         generators = SparsePauliVectorArray(generators)
+
     if isinstance(generators, SparsePauliVectorArray):
-        return impl_sparse.lie_closure(generators, max_dim=max_dim, verbosity=verbosity,
-                                       min_tasks=min_tasks, max_workers=max_workers)
+        from fastdla._closure_impl.sparse_numba import lie_closure as fn
     else:
-        return impl_matrix.lie_closure(generators, keep_original=keep_original, max_dim=max_dim,
-                                       verbosity=verbosity)
+        from fastdla._closure_impl.matrix_jax import lie_closure as fn
+
+    return fn(generators, keep_original=keep_original, max_dim=max_dim, verbosity=verbosity,
+              **kwargs)
