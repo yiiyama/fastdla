@@ -2,6 +2,7 @@
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from typing import Optional
 import time
+from multiprocessing import cpu_count
 import numpy as np
 from numba import njit, objmode
 from fastdla.sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
@@ -303,6 +304,7 @@ def lie_closure(
     else:
         raise NotImplementedError()
 
+    max_workers = min(max_workers, cpu_count())
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = set()
 
