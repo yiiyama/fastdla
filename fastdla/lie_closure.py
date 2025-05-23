@@ -39,9 +39,9 @@ def linear_independence(
         True if Q is linearly independent from all elements of the basis.
     """
     if isinstance(op, SparsePauliVector):
-        from fastdla._closure_impl.sparse_numba import linear_independence as fn
+        from fastdla._lie_closure_impl.sparse_numba import linear_independence as fn
     else:
-        from fastdla._closure_impl.matrix_jax import linear_independence as fn
+        from fastdla._lie_closure_impl.matrix_jax import linear_independence as fn
 
     return fn(op, basis, xinv)
 
@@ -59,9 +59,9 @@ def orthogonalize(
     T = Q - Π Π† Q.
     """
     if isinstance(op, SparsePauliVector):
-        from fastdla._closure_impl.sparse_numba import orthogonalize as fn
+        from fastdla._lie_closure_impl.sparse_numba import orthogonalize as fn
     else:
-        from fastdla._closure_impl.matrix_jax import orthogonalize as fn
+        from fastdla._lie_closure_impl.matrix_jax import orthogonalize as fn
 
     return fn(op, basis)
 
@@ -116,9 +116,9 @@ def lie_closure(
         generators = SparsePauliVectorArray(generators)
 
     if isinstance(generators, SparsePauliVectorArray):
-        from fastdla._closure_impl.sparse_numba import lie_closure as fn
+        from fastdla._lie_closure_impl.sparse_numba import lie_closure as fn
     else:
-        from fastdla._closure_impl.matrix_jax import lie_closure as fn
+        from fastdla._lie_closure_impl.matrix_jax import lie_closure as fn
 
     return fn(generators, keep_original=keep_original, max_dim=max_dim, verbosity=verbosity,
               **kwargs)
