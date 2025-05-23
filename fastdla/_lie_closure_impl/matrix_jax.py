@@ -241,6 +241,8 @@ def lie_closure(
     if len(generators) == 0:
         return np.array([], dtype=np.complex128)
 
+    max_dim = max_dim or generators[0].shape[-1] ** 2 - 1
+
     # Allocate the basis array and compute the initial basis
     max_size = ((len(generators) - 1) // BASIS_ALLOC_UNIT + 1) * BASIS_ALLOC_UNIT
     basis = jnp.zeros((max_size,) + generators[0].shape, dtype=generators[0].dtype)

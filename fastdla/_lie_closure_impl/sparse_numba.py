@@ -289,6 +289,8 @@ def lie_closure(
     if len(generators) == 0:
         return generators
 
+    max_dim = max_dim or 4 ** generators.num_qubits - 1
+
     # Allocate the basis and X arrays and compute the initial basis
     basis = SparsePauliVectorArray([generators[0].normalize()])
 
