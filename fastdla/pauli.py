@@ -103,7 +103,7 @@ class PauliProduct:
         self.num_qubits = num_qubits
 
     def __str__(self) -> str:
-        return ''.join(PAULI_NAMES[i] for i in self.indices())
+        return ''.join(PAULI_NAMES[i] for i in self.indices()[::-1])
 
     def __repr__(self) -> str:
         return f"PauliProduct('{str(self)}')"
