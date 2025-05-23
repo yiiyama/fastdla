@@ -304,7 +304,9 @@ def lie_closure(
     else:
         raise NotImplementedError()
 
-    max_workers = min(max_workers, cpu_count())
+    if max_workers is not None:
+        max_workers = min(max_workers, cpu_count())
+
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = set()
 
