@@ -178,6 +178,15 @@ def _if_orthogonal_update(
 @partial(jax.jit, static_argnames=['updater', 'verbosity'])
 def _main_loop_body(val, updater, verbosity=0):
     """Compute the commutator and update the basis with orthogonal components."""
+    def _continue(_, _basis, _basis_size, _aux):
+        return _basis, _basis_size, _aux
+
+    def _update(_comm, _basis, _basis_size, _aux):
+        result = updater(_comm, _basis, _basis_size, *_aux)
+        basis, basis_size = result[:2]
+        aux = result[2:]
+        return basis, basis_size, aux
+
     idx1, idx2, basis, basis_size, aux = val
 
     if verbosity > 1:
@@ -192,11 +201,14 @@ def _main_loop_body(val, updater, verbosity=0):
 
     # Commutator
     comm = _commutator_norm(basis[idx1], basis[idx2])
-    # If the current commutator is independent, update the basis and the X matrix
-    result = updater(comm, basis, basis_size, *aux)
-    basis, basis_size = result[:2]
-    aux = result[2:]
-    # Indices for the next commutator
+    # If non-null, call the updater function
+    basis, basis_size, aux = jax.lax.cond(
+        jnp.allclose(comm, 0.),
+        _continue,
+        _update,
+        comm, basis, basis_size, aux
+    )
+    # Compute the next indices
     next_idx1, next_idx2 = jax.lax.cond(
         jnp.equal(idx2 + 1, idx1),
         lambda: (idx1 + 1, 0),
