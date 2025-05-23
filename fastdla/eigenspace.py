@@ -67,12 +67,12 @@ def get_eigenspace(
         if basis is None:
             if dim is None:
                 raise ValueError('Need dimension specification')
-            singular_mat = op(np.eye(dim, dtype=np.complex128))
+            singular_mat = op(npmod.eye(dim, dtype=np.complex128))
         else:
             singular_mat = op(basis)
     else:
         if basis is None:
-            singular_mat = np.array(op)
+            singular_mat = npmod.array(op)
         else:
             singular_mat = op @ basis
 

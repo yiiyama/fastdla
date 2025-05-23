@@ -326,7 +326,7 @@ def spv_matmul(
 ) -> SparsePauliVector:
     """Product of two sparse Pauli ops."""
     if (num_qubits := o1.num_qubits) != o2.num_qubits:
-        raise ValueError('Matmul between incompatible SparsePauliOps')
+        raise ValueError('Matmul between incompatible SparsePauliVectors')
 
     if (num_terms := o1.num_terms * o2.num_terms) == 0:
         return SparsePauliVector([], [], num_qubits, no_check=True)
