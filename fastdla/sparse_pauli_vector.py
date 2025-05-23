@@ -363,4 +363,4 @@ def spv_commutator(
 
 def spv_dot(o1: SparsePauliVector, o2: SparsePauliVector) -> complex:
     common_entries = np.nonzero(o1.indices[:, None] - o2.indices[None, :] == 0)
-    return np.sum(np.conjugate(o1.data[common_entries[0]]) * o2.data[common_entries[1]])
+    return np.sum(o1.coeffs[common_entries[0]].conjugate() * o2.coeffs[common_entries[1]])
