@@ -1,44 +1,86 @@
 """General linear algebra routine to find an eigenspace of an operator."""
 from collections.abc import Callable
 from numbers import Number
+from typing import Optional
 import numpy as np
 
 
 def get_eigenspace(
     op: np.ndarray | Callable[[np.ndarray], np.ndarray],
     eigenvalue: Number,
-    subspace_basis: np.ndarray,
+    basis: Optional[np.ndarray] = None,
+    dim: Optional[int] = None,
     npmod=np
 ) -> np.ndarray:
-    """Extract eigenvectors of an operator within a subspace spanned by a set of vectors.
+    r"""Extract eigenvectors of an operator within a space spanned by a set of vectors.
 
-    Algorithm:
-    Let B represent the given subspace basis (shape (N, S)). A vector in the space spanned by
-    columns of B is given by Bx, where x is a column vector with S entries. When Bx is an
-    eigenvector of operator O with eigenvalue λ,
-        O Bx = λ Bx ⇒ (O - λI)Bx = 0.
-    If the SVD of (O - λI)B is UΣV†, x is equal to the conjugate of a row of V† corresponding to a
-    zero singular value. As there can be multiple such xs, we organize them as column vectors and
-    return B [x0, x1, ...], which is a basis of the space within the initial subspace that is
-    spanned by the eigenvectors of O.
+    Let :math:`B` be a matrix consisting of :math:`S` linearly independent vectors of length
+    :math:`N` (implying :math:`S \leq N`). A vector in the space spanned by columns of :math:`B` is
+    given by :math:`Bx`, where :math:`x` is a column of S coefficients. When :math:`Bx` is an
+    eigenvector of operator :math:`O` with eigenvalue :math:`\lambda`,
+
+    .. math::
+       :label: x_eigen
+
+        O Bx = \lambda Bx \\
+        \therefore (O - \lambda I)Bx = 0.
+
+    Let the singular value decomposition of :math:`(O - \lambda I)B` be
+
+    .. math::
+
+        (O - \lambda I)B = U \Sigma V^{\dagger} = U \sum_{j=0}^{S-1} \sigma_j v_j^{\dagger},
+
+    where :math:`\{v_j\}_j` are orthonormal column vectors of length :math:`S`. For Equation
+    :eq:`x_eigen` to hold, we need
+
+    .. math::
+
+        x \in \mathrm{span}(\{v_j | \sigma_j = 0\}).
+
+    The eigen-subspace of the original space corresponding to the eigenvalue :math:`\lambda` of
+    operator :math:`O` is then :math:`\mathrm{span}(\{B v_j | \sigma_j = 0\})`.
+
+    Note that in the above we do not require an explicit form of :math:`O` but only need the result
+    of applying it on the columns of :math:`B`.
 
     Args:
-        op: A matrix or a callable that applies the N-square operator to an array of shape (N, S).
+        op: A matrix or a callable that applies an :math:`N \times N` linear operator to an
+            :math:`N \times S` matrix.
         eigenvalue: Eigenvalue of the operator to find the eigenspace for.
-        subspace_basis: A set of mutually orthogonal S column vectors of length N.
+        basis: An array of :math:`S` linearly independent column vectors of length :math:`N`. If not
+            given, the identity matrix is assumed.
+        dim: The dimension :math:`N` of the linear space (necessary only when `op` is a callable and
+            `basis` is not given).
 
     Returns:
-        An array of shape (N, S'), where S' is the number of eigenvectors of op found in the
-        subspace.
+        An array of shape :math:`(N, S')`, where :math:`S'` is the dimension of the eigen-subspace.
     """
     if callable(op):
-        transformed = op(subspace_basis)
+        if basis is None:
+            if dim is None:
+                raise ValueError('Need dimension specification')
+            singular_mat = op(np.eye(dim, dtype=np.complex128))
+        else:
+            singular_mat = op(basis)
     else:
-        transformed = op @ subspace_basis
+        if basis is None:
+            singular_mat = np.array(op)
+        else:
+            singular_mat = op @ basis
 
-    _, svals, vhmat = npmod.linalg.svd(transformed - eigenvalue * subspace_basis,
-                                       full_matrices=False)
+    dim = singular_mat.shape[0]
+
+    if basis is None:
+        singular_mat[np.arange(dim), np.arange(dim)] -= eigenvalue
+    else:
+        singular_mat -= eigenvalue * basis
+
+    _, svals, vhmat = npmod.linalg.svd(singular_mat, full_matrices=False)
     indices = npmod.nonzero(npmod.isclose(svals, 0.))[0]
-    combinations = vhmat[indices].conjugate().T
+    v_columns = vhmat[indices].conjugate().T
 
-    return subspace_basis @ combinations
+    if basis is None:
+        return v_columns
+
+    return basis @ v_columns
