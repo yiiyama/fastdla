@@ -186,6 +186,7 @@ class SparsePauliVectorArray:
     def __init__(
         self,
         vectors: Optional[list[SparsePauliVector]] = None,
+        num_qubits: Optional[int] = None,
         initial_capacity: int = MEM_ALLOC_UNIT,
     ):
         initial_capacity = (((initial_capacity - 1) // self.MEM_ALLOC_UNIT + 1)
@@ -193,7 +194,7 @@ class SparsePauliVectorArray:
         self.indices = np.empty(initial_capacity, dtype=np.uint64)
         self.coeffs = np.empty(initial_capacity, dtype=np.complex128)
         self.ptrs = [0]
-        self.num_qubits = None
+        self.num_qubits = num_qubits
 
         for vector in (vectors or []):
             self.append(vector)
