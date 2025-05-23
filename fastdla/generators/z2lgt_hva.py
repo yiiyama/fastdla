@@ -1,9 +1,10 @@
 """Generators and symmetry projectors for Z2 lattice gauge theory HVA."""
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Optional
 import numpy as np
 from ..pauli import PAULIS
 from ..sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
+from ..eigenspace import get_eigenspace
 
 
 def z2lgt_hva_generators(num_fermions: int) -> SparsePauliVectorArray:
@@ -101,7 +102,7 @@ def z2lgt_hva_generators(num_fermions: int) -> SparsePauliVectorArray:
 
 
 def z2lgt_gauss_local_projector(
-    num_sites: int,
+    num_fermions: int,
     isite: int,
     eigval: int
 ) -> SparsePauliVector:
@@ -119,7 +120,7 @@ def z2lgt_gauss_local_projector(
     if abs(eigval) != 1:
         raise ValueError('Charge value must be +-1')
 
-    num_qubits = 2 * num_sites
+    num_qubits = 4 * num_fermions
 
     if eigval > 0:
         # +0+ -1+ -0- +1- with +/-=1/2(I±X) and 0/1=1/2(I±Z)
@@ -284,7 +285,7 @@ def z2lgt_translation_projector(num_fermions: int, iroot: int) -> SparsePauliVec
     return SparsePauliVector(indices, coeffs)
 
 
-def z2lgt_dense_projector(
+def z2lgt_symmetry_eigenspace(
     gauss_eigvals: Sequence[int],
     charge: Optional[int] = None,
     t_iroot: Optional[int] = None,
@@ -297,20 +298,20 @@ def z2lgt_dense_projector(
 
     Returns a (pu, 2**nq) matrix.
     """
-    projector = z2lgt_dense_gauss_projector(gauss_eigvals, npmod=npmod)
+    subspace = z2lgt_dense_gauss_eigenspace(gauss_eigvals, npmod=npmod)
     if charge is not None:
-        projector = z2lgt_dense_u1_projector(projector, charge, npmod=npmod)
+        subspace = z2lgt_dense_u1_eigenspace(subspace, charge, npmod=npmod)
     if t_iroot is not None:
-        projector = z2lgt_dense_translation_projector(projector, t_iroot, npmod=npmod)
+        subspace = z2lgt_dense_translation_projector(subspace, t_iroot, npmod=npmod)
 
-    return np.asarray(projector)
+    return np.asarray(subspace)
 
 
-def z2lgt_dense_gauss_projector(
+def z2lgt_dense_gauss_eigenspace(
     gauss_eigvals: Sequence[int],
     npmod=np
 ) -> np.ndarray:
-    """Construct the Gauss's law projector.
+    """Get the eigenspace basis of Gauss's law operators.
 
     The construction follows the projection algorithm for multiple symmetries proposed by LN. To
     avoid constructing the full 2^nq x 2^nq matrix, we compose the final projector from local-term
@@ -331,12 +332,19 @@ def z2lgt_dense_gauss_projector(
         actually acts on the leftmost qubit as well as the rightmost two. R(M-1) and S(M-1) have
         shapes (p(M-2)x2, p(M-2)x2) and (p(M-2)x2, p(M-1)) and the final projector will be
         (p(M-1), d(M-1)=d(M-2)x2=2**nq).
+
+    Args:
+        gauss_eigvals: Sequence (length :math:`2N_f`) of eigenvalues (±1) of :math:`G_n`.
+
+    Returns:
+        An array of shape (2**N_q, 2**N_s), which represents the basis column vectors of the
+        eigenspace.
     """
     if len(gauss_eigvals) % 2 or not all(abs(ev) == 1 for ev in gauss_eigvals):
         raise ValueError('There must be an even number of charges with values +-1')
 
     num_sites = len(gauss_eigvals)
-    projector = npmod.array(0.)
+    basis = npmod.array(0.)
 
     # Gauss's law projector
     # Start from the leftmost link-site-link and iteratively construct the full-size projector
@@ -350,53 +358,46 @@ def z2lgt_dense_gauss_projector(
         if isite_r == 0:
             eigvals, eigvecs = npmod.linalg.eigh(local_projector)
             indices = npmod.nonzero(npmod.isclose(eigvals, 1.))[0]
-            projector = eigvecs[:, indices].T.conjugate()
+            basis = eigvecs[:, indices].T.conjugate()
         elif isite_r == num_sites - 1:
             # Transpose the rightmost X to position 0 simultaneously with matrix multiplication
-            pdim = projector.shape[0]
-            projector = projector.reshape((pdim, 2, 2 ** (2 * num_sites - 3), 2))
+            pdim = basis.shape[0]
+            basis = basis.reshape((pdim, 2, 2 ** (2 * num_sites - 3), 2))
             local_projector = local_projector.reshape((2, 2, 2, 2, 2, 2))
-            projected_local = npmod.einsum('ijkl,lmjnop,qpkn->imqo', projector, local_projector,
-                                           projector.conjugate())  # (pdim, 2, pdim, 2)
+            projected_local = npmod.einsum('ijkl,lmjnop,qpkn->imqo', basis, local_projector,
+                                           basis.conjugate())  # (pdim, 2, pdim, 2)
             projected_local = projected_local.reshape((pdim * 2,) * 2)
             eigvals, eigvecs = npmod.linalg.eigh(projected_local)
             indices = npmod.nonzero(npmod.isclose(eigvals, 1.))[0]
             subspace = eigvecs[:, indices].T.conjugate().reshape(-1, pdim, 2)
-            projector = projector.reshape(pdim, 2 ** (2 * num_sites - 1))
-            projector = npmod.einsum('ijk,jl->ilk', subspace, projector)
-            projector = projector.reshape(-1, 2 ** (2 * num_sites))
+            basis = basis.reshape(pdim, 2 ** (2 * num_sites - 1))
+            basis = npmod.einsum('ijk,jl->ilk', subspace, basis)
+            basis = basis.reshape(-1, 2 ** (2 * num_sites))
         else:
-            pdim = projector.shape[0]
-            projector = projector.reshape((pdim, 2 ** (2 * isite_r), 2))
+            pdim = basis.shape[0]
+            basis = basis.reshape((pdim, 2 ** (2 * isite_r), 2))
             local_projector = local_projector.reshape((2, 4, 2, 4))
-            projected_local = npmod.einsum('ijk,klmn,ojm->ilon', projector, local_projector,
-                                           projector.conjugate())  # (pdim, 4, pdim, 4)
+            projected_local = npmod.einsum('ijk,klmn,ojm->ilon', basis, local_projector,
+                                           basis.conjugate())  # (pdim, 4, pdim, 4)
             projected_local = projected_local.reshape((pdim * 4,) * 2)
             eigvals, eigvecs = npmod.linalg.eigh(projected_local)
             indices = npmod.nonzero(npmod.isclose(eigvals, 1.))[0]
             subspace = eigvecs[:, indices].T.conjugate().reshape(-1, pdim, 4)
-            projector = projector.reshape(pdim, 2 ** (2 * isite_r + 1))
-            projector = npmod.einsum('ijk,jl->ilk', subspace, projector)
-            projector = projector.reshape(-1, 2 ** (2 * isite_r + 3))
+            basis = basis.reshape(pdim, 2 ** (2 * isite_r + 1))
+            basis = npmod.einsum('ijk,jl->ilk', subspace, basis)
+            basis = basis.reshape(-1, 2 ** (2 * isite_r + 3))
 
-    return projector
+    return basis.conjugate().T
 
 
-def z2lgt_dense_u1_projector(
-    projector: np.ndarray,
+def z2lgt_dense_u1(
     charge: int,
+    num_fermions: int,
     npmod=np
-) -> np.ndarray:
-    """Project out the subspace corresponding to the U1 charge within the given projector.
-
-    Because the U(1) projector is diagonal, we can apply a similar algorithm to combine the Gauss
-    and U(1) projectors after the full Gauss projector is constructed. With the charge projector
-    Qu (shape (2**nq, 2**nq) diagonal), first project it onto the Gauss subspace using P(M-1) to
-    obtain Ru=P(M-1) Qu P(M-1)†. Then assemble the non-null eigenvectors into Su (shape (p(i), pu))
-    and update the global projector to Pg=Su†P(M-1).
-    """
-    num_qubits = np.round(np.log2(projector.shape[1])).astype(int)
-    num_sites = num_qubits // 2
+) -> Callable[[np.ndarray], np.ndarray]:
+    """Return a function that applies the total U(1) charge operation on state vectors."""
+    num_sites = 2 * num_fermions
+    num_qubits = 2 * num_sites
 
     if abs(charge) > num_sites or charge % 2 != 0:
         raise ValueError('Invalid charge value')
@@ -407,27 +408,44 @@ def z2lgt_dense_u1_projector(
     for isite in range(num_sites):
         eigvals += npmod.expand_dims(z, tuple(range(isite)) + tuple(range(isite + 1, num_sites)))
     eigvals = eigvals.reshape(-1)
-    states = npmod.nonzero(eigvals == charge)[0]
+    wrong_charge_states = npmod.nonzero(npmod.logical_not(npmod.equal(eigvals, charge)))[0]
 
-    # Project out the columns corresponding to wrong charge
-    pdim = projector.shape[0]
-    projector_reduced = projector.reshape(
-        (pdim,) + (2,) * num_qubits
-    ).transpose(
-        (0,)
-        + tuple(range(1, num_qubits + 1, 2))
-        + tuple(range(2, num_qubits + 1, 2))
-    ).reshape(
-        (pdim,) + (2,) * num_sites + (2 ** num_sites,)
-    )[..., states].reshape((pdim, -1))
-    projected_charge = projector_reduced @ projector_reduced.conjugate().T
+    def op(basis):
+        """Return the singular matrix."""
+        transformed = npmod.array(basis).reshape((2,) * num_qubits + (-1,))
+        # Move the site axes to the front and reserialize
+        transformed = npmod.moveaxis(transformed, tuple(range(1, num_qubits, 2)),
+                                     tuple(range(num_sites)))
+        transformed = npmod.reshape(transformed, (2 ** num_sites,) + (2,) * num_sites + (-1,))
+        transformed[wrong_charge_states] = 0.
+        # Revert the axes
+        transformed = npmod.reshape(transformed, (2,) * num_qubits + (-1,))
+        transformed = npmod.moveaxis(transformed, tuple(range(num_sites)),
+                                     tuple(range(1, num_qubits, 2)))
+        transformed = npmod.reshape(transformed, (2 ** num_qubits, -1))
+        return transformed
 
-    eigvals, eigvecs = npmod.linalg.eigh(projected_charge)
-    indices = npmod.nonzero(npmod.isclose(eigvals, 1.))[0]
-    subspace = eigvecs[:, indices].T.conjugate()
-    projector = subspace @ projector
+    return op
 
-    return projector
+
+def z2lgt_dense_u1_eigenspace(
+    charge: int,
+    basis: Optional[np.ndarray] = None,
+    num_fermions: Optional[int] = None,
+    npmod=np
+) -> np.ndarray:
+    """Project out the subspace corresponding to the U1 charge within the given projector.
+
+    Because the U(1) projector is diagonal, we can apply a similar algorithm to combine the Gauss
+    and U(1) projectors after the full Gauss projector is constructed. With the charge projector
+    Qu (shape (2**nq, 2**nq) diagonal), first project it onto the Gauss subspace using P(M-1) to
+    obtain Ru=P(M-1) Qu P(M-1)†. Then assemble the non-null eigenvectors into Su (shape (p(i), pu))
+    and update the global projector to Pg=Su†P(M-1).
+    """
+    if num_fermions is None:
+        num_fermions = np.round(np.log2(basis.shape[0])).astype(int) // 4
+    op = z2lgt_dense_u1(charge, num_fermions, npmod=npmod)
+    return get_eigenspace(op, basis, dim=2 ** (num_fermions * 4), npmod=npmod)
 
 
 def z2lgt_dense_charge_projector(

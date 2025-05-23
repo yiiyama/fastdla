@@ -4,10 +4,11 @@ from numbers import Number
 from typing import Optional
 import numpy as np
 
+LinearOpFunction = Callable[[np.ndarray], np.ndarray]
+
 
 def get_eigenspace(
-    op: np.ndarray | Callable[[np.ndarray], np.ndarray],
-    eigenvalue: Number,
+    op: np.ndarray | LinearOpFunction | tuple[np.ndarray, Number] | tuple[LinearOpFunction, Number],
     basis: Optional[np.ndarray] = None,
     dim: Optional[int] = None,
     npmod=np
@@ -45,8 +46,9 @@ def get_eigenspace(
     of applying it on the columns of :math:`B`.
 
     Args:
-        op: A matrix or a callable that applies an :math:`N \times N` linear operator to an
-            :math:`N \times S` matrix.
+        op: Either an operator corresponding to :math:`O - \lambda I` or a tuple
+            :math:`(O, \lambda)`. The operator can be a matrix or a callable that applies an
+            :math:`N \times N` linear operator to an :math:`N \times S` matrix.
         eigenvalue: Eigenvalue of the operator to find the eigenspace for.
         basis: An array of :math:`S` linearly independent column vectors of length :math:`N`. If not
             given, the identity matrix is assumed.
@@ -56,6 +58,11 @@ def get_eigenspace(
     Returns:
         An array of shape :math:`(N, S')`, where :math:`S'` is the dimension of the eigen-subspace.
     """
+    if isinstance(op, tuple):
+        op, eigenvalue = op
+    else:
+        eigenvalue = None
+
     if callable(op):
         if basis is None:
             if dim is None:
@@ -71,10 +78,11 @@ def get_eigenspace(
 
     dim = singular_mat.shape[0]
 
-    if basis is None:
-        singular_mat[np.arange(dim), np.arange(dim)] -= eigenvalue
-    else:
-        singular_mat -= eigenvalue * basis
+    if eigenvalue is not None:
+        if basis is None:
+            singular_mat[np.arange(dim), np.arange(dim)] -= eigenvalue
+        else:
+            singular_mat -= eigenvalue * basis
 
     _, svals, vhmat = npmod.linalg.svd(singular_mat, full_matrices=False)
     indices = npmod.nonzero(npmod.isclose(svals, 0.))[0]
