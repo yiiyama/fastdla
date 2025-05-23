@@ -4,113 +4,7 @@ from numbers import Number
 from typing import Optional
 import numpy as np
 from scipy.sparse import csr_array
-
-
-PAULI_NAMES = ['I', 'X', 'Y', 'Z']
-PAULI_INDICES = {'I': 0, 'X': 1, 'Y': 2, 'Z': 3}
-PAULI_PROD_INDEX = np.array([
-    [0, 1, 2, 3],
-    [1, 0, 3, 2],
-    [2, 3, 0, 1],
-    [3, 2, 1, 0]
-], dtype=np.uint64)
-PAULI_PROD_COEFF = np.array([
-    [1., 1., 1., 1.],
-    [1., 1., 1.j, -1.j],
-    [1., -1.j, 1., 1.j],
-    [1., 1.j, -1.j, 1.]
-], dtype=np.complex128)
-PAULIS = np.array([
-    [[1., 0.], [0., 1.]],
-    [[0., 1.], [1., 0.]],
-    [[0., -1.j], [1.j, 0.]],
-    [[1., 0.], [0., -1.]]
-])
-PAULI_SPARSE_COLS = np.array([
-    [0, 1],
-    [1, 0],
-    [1, 0],
-    [0, 1]
-])
-PAULI_SPARSE_DATA = np.array([
-    [1., 1.],
-    [1., 1.],
-    [-1.j, 1.j],
-    [1., -1.]
-])
-
-
-class PauliProduct:
-    """Product of Pauli operators."""
-    @staticmethod
-    def str_to_idx(pstr: str) -> int:
-        indices = np.array([PAULI_INDICES[p.upper()] for p in pstr], dtype=np.uint64)
-        return np.sum(indices * (4 ** np.arange(indices.shape[0])[::-1]))
-
-    @staticmethod
-    def seq_to_idx(arr: Sequence[int]) -> int:
-        indices = np.asarray(arr)
-        if np.any(np.logical_or(indices < 0, indices > 3)):
-            raise ValueError('Invalid Pauli index')
-        return np.sum(indices * (4 ** np.arange(indices.shape[0])))
-
-    def __init__(
-        self,
-        index: str | int | Sequence[int],
-        num_qubits: Optional[int] = None
-    ):
-        try:
-            num_qubits = len(index)
-        except TypeError as exc:
-            if num_qubits is None:
-                raise ValueError('Need num_qubits if index is an int') from exc
-            self.index = index
-        else:
-            if num_qubits == 0:
-                raise ValueError('Null sequence')
-            if isinstance(index, str):
-                try:
-                    self.index = PauliProduct.str_to_idx(index)
-                except KeyError as ex:
-                    raise ValueError('Invalid Pauli string') from ex
-            else:
-                try:
-                    self.index = PauliProduct.seq_to_idx(index)
-                except ValueError as ex:
-                    raise ValueError('Invalid Pauli index') from ex
-
-        self.num_qubits = num_qubits
-
-    def __str__(self) -> str:
-        return ''.join(PAULI_NAMES[i] for i in self.indices())
-
-    def __repr__(self) -> str:
-        return f"PauliProduct('{str(self)}')"
-
-    def indices(self) -> np.ndarray:
-        return ((self.index // (4 ** np.arange(self.num_qubits))) % 4).astype(int)
-
-    def to_matrix(self, *, sparse: bool = False, npmod=np) -> np.ndarray | csr_array:
-        if sparse:
-            cols = npmod.array(0)
-            data = npmod.array(1.)
-            for iq, ip in enumerate(self.indices()):
-                cols = npmod.add.outer(PAULI_SPARSE_COLS[ip] * (2 ** iq), cols).reshape(-1)
-                data = npmod.outer(PAULI_SPARSE_DATA[ip], data).reshape(-1)
-            dim = 2 ** self.num_qubits
-            indptr = npmod.arange(dim + 1)
-            if npmod is np:
-                return csr_array((data, cols, indptr), shape=(dim, dim))
-            else:
-                # pylint: disable-next=import-outside-toplevel
-                from jax.experimental.sparse import BCSR
-                return BCSR((data, cols, indptr), shape=(dim, dim), indices_sorted=True,
-                            unique_indices=True)
-
-        matrix = np.array(1.)
-        for ip in self.indices():
-            matrix = np.kron(PAULIS[ip], matrix)
-        return matrix
+from .pauli import PauliProduct
 
 
 class SparsePauliVector:
@@ -118,20 +12,20 @@ class SparsePauliVector:
     @classmethod
     def switch_impl(cls, to: str):
         if to == 'ref':
-            cls.__add__ = spv_sum
-            cls.__sub__ = lambda self, other: spv_sum(self, -other)
-            cls.__matmul__ = spv_prod
+            cls.__add__ = spv_add
+            cls.__sub__ = lambda self, other: spv_add(self, -other)
+            cls.__matmul__ = spv_matmul
             cls.commutator = spv_commutator
-            cls.dot = spv_innerprod
+            cls.dot = spv_dot
         elif to == 'fast':
             # pylint: disable-next=import-outside-toplevel
-            from fastdla.spv_fast import (spv_sum_fast, spv_prod_fast, spv_commutator_fast,
-                                          spv_innerprod_fast)
-            cls.__add__ = spv_sum_fast
-            cls.__sub__ = lambda self, other: spv_sum_fast(self, -other)
-            cls.__matmul__ = spv_prod_fast
+            from fastdla.spv_fast import (spv_add_fast, spv_matmul_fast, spv_commutator_fast,
+                                          spv_dot_fast)
+            cls.__add__ = spv_add_fast
+            cls.__sub__ = lambda self, other: spv_add_fast(self, -other)
+            cls.__matmul__ = spv_matmul_fast
             cls.commutator = spv_commutator_fast
-            cls.dot = spv_innerprod_fast
+            cls.dot = spv_dot_fast
 
     def __init__(
         self,
@@ -227,10 +121,10 @@ class SparsePauliVector:
         return SparsePauliVector(self.indices, -self.coeffs, self.num_qubits, no_check=True)
 
     def __add__(self, other: 'SparsePauliVector') -> 'SparsePauliVector':
-        return spv_sum(self, other)
+        return spv_add(self, other)
 
     def __sub__(self, other: 'SparsePauliVector') -> 'SparsePauliVector':
-        return spv_sum(self, -other)
+        return spv_add(self, -other)
 
     def __mul__(self, scalar: Number) -> 'SparsePauliVector':
         try:
@@ -243,7 +137,7 @@ class SparsePauliVector:
         return self.__mul__(scalar)
 
     def __matmul__(self, other: 'SparsePauliVector') -> 'SparsePauliVector':
-        return spv_prod(self, other)
+        return spv_matmul(self, other)
 
     def commutator(
         self,
@@ -253,7 +147,7 @@ class SparsePauliVector:
         return spv_commutator(self, other, normalize)
 
     def dot(self, other: 'SparsePauliVector') -> complex:
-        return spv_innerprod(self, other)
+        return spv_dot(self, other)
 
     def to_csr(self) -> csr_array:
         shape = (1, self.vlen)
@@ -414,7 +308,7 @@ def _uniquify(
     return indices_uniq, coeffs_uniq
 
 
-def spv_sum(*ops, normalize: bool = False) -> SparsePauliVector:
+def spv_add(*ops, normalize: bool = False) -> SparsePauliVector:
     """Sum of sparse Pauli ops."""
     indices, coeffs = _uniquify(
         np.concatenate([op.indices for op in ops]),
@@ -424,30 +318,27 @@ def spv_sum(*ops, normalize: bool = False) -> SparsePauliVector:
     return SparsePauliVector(indices, coeffs, ops[0].num_qubits, no_check=True)
 
 
-def spv_prod(
+def spv_matmul(
     o1: SparsePauliVector,
     o2: SparsePauliVector,
     normalize: bool = False
 ) -> SparsePauliVector:
     """Product of two sparse Pauli ops."""
-    if o1.num_qubits != o2.num_qubits:
+    if (num_qubits := o1.num_qubits) != o2.num_qubits:
         raise ValueError('Matmul between incompatible SparsePauliOps')
 
     if (num_terms := o1.num_terms * o2.num_terms) == 0:
-        return SparsePauliVector([], [], o1.num_qubits, no_check=True)
+        return SparsePauliVector([], [], num_qubits, no_check=True)
 
     indices = np.unravel_index(np.arange(num_terms), (o1.num_terms, o2.num_terms))
     coeffs = np.outer(o1.coeffs, o2.coeffs).reshape(-1)
-    s1s = o1.indices[indices[0]]
-    s2s = o2.indices[indices[1]]
-
-    p1s = ((s1s[:, None] // (4 ** np.arange(o1.num_qubits)[None, ::-1])) % 4).astype(int)
-    p2s = ((s2s[:, None] // (4 ** np.arange(o2.num_qubits)[None, ::-1])) % 4).astype(int)
-    pout = PAULI_PROD_INDEX[p1s, p2s]  # shape [num_terms, num_qubits]
-    sout = np.sum(pout * (4 ** np.arange(o1.num_qubits)[None, ::-1]), axis=1)
-    coeffs *= np.prod(PAULI_PROD_COEFF[p1s, p2s], axis=1)
-    indices, coeffs = _uniquify(sout, coeffs, normalize)
-    return SparsePauliVector(indices, coeffs, o1.num_qubits, no_check=True)
+    i1 = o1.indices[indices[0]]
+    c1 = o1.coeffs[indices[0]]
+    i2 = o2.indices[indices[1]]
+    c2 = o2.coeffs[indices[1]]
+    indices, coeffs = PauliProduct.matmul(i1, c1, i2, c2, num_qubits)
+    indices, coeffs = _uniquify(indices, coeffs, normalize)
+    return SparsePauliVector(indices, coeffs, num_qubits, no_check=True)
 
 
 def spv_commutator(
@@ -462,13 +353,13 @@ def spv_commutator(
     comms = []
     for lhs, rhs in [(o1h, o2h), (o1a, o2a)]:
         if lhs.num_terms * rhs.num_terms != 0:
-            comms.append(2. * spv_prod(lhs, rhs).apart)
+            comms.append(2. * spv_matmul(lhs, rhs).apart)
     for lhs, rhs in [(o1h, o2a), (o1a, o2h)]:
         if lhs.num_terms * rhs.num_terms != 0:
-            comms.append(2. * spv_prod(lhs, rhs).hpart)
-    return spv_sum(*comms, normalize=normalize)
+            comms.append(2. * spv_matmul(lhs, rhs).hpart)
+    return spv_add(*comms, normalize=normalize)
 
 
-def spv_innerprod(o1: SparsePauliVector, o2: SparsePauliVector) -> complex:
+def spv_dot(o1: SparsePauliVector, o2: SparsePauliVector) -> complex:
     common_entries = np.nonzero(o1.indices[:, None] - o2.indices[None, :] == 0)
     return np.sum(np.conjugate(o1.data[common_entries[0]]) * o2.data[common_entries[1]])

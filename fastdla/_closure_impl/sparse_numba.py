@@ -6,7 +6,7 @@ from multiprocessing import cpu_count
 import numpy as np
 from numba import njit, objmode
 from fastdla.sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
-from fastdla.spv_fast import _uniquify_fast, _spv_commutator_fast, _spv_innerprod_fast
+from fastdla.spv_fast import _uniquify_fast, _spv_commutator_fast, _spv_dot_fast
 
 BASIS_ALLOC_UNIT = 1024
 MEM_ALLOC_UNIT = SparsePauliVectorArray.MEM_ALLOC_UNIT
@@ -35,7 +35,7 @@ def _update_xmatrix(
     for row, col in zip(rows, cols):
         row_start, row_end = basis_ptrs[row:row + 2]
         col_start, col_end = basis_ptrs[col:col + 2]
-        ip = _spv_innerprod_fast(
+        ip = _spv_dot_fast(
             basis_indices[row_start:row_end],
             basis_coeffs[row_start:row_end],
             basis_indices[col_start:col_end],
@@ -65,7 +65,7 @@ def _linear_independence(
     is_zero = True
     for ib in range(basis_size):
         start, end = basis_ptrs[ib:ib + 2]
-        ip = _spv_innerprod_fast(basis_indices[start:end], basis_coeffs[start:end],
+        ip = _spv_dot_fast(basis_indices[start:end], basis_coeffs[start:end],
                                  new_indices, new_coeffs)
         pidag_q[ib] = ip
         is_zero &= np.isclose(ip.real, 0.) and np.isclose(ip.imag, 0.)
@@ -152,7 +152,7 @@ def _orthogonalize(
 
     for ib in range(basis_size):
         start, end = basis_ptrs[ib:ib + 2]
-        ip = _spv_innerprod_fast(basis_indices[start:end], basis_coeffs[start:end],
+        ip = _spv_dot_fast(basis_indices[start:end], basis_coeffs[start:end],
                                  new_indices, new_coeffs)
         if not np.isclose(ip, 0.):
             concat_coeffs[start:end] = -ip * basis_coeffs[start:end]

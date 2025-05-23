@@ -1,7 +1,8 @@
 """Numba-compiled versions of SparsePauliVector operations."""
 import numpy as np
 from numba import njit
-from .sparse_pauli_vector import PAULI_PROD_COEFF, PAULI_PROD_INDEX, SparsePauliVector
+from .pauli import PAULI_MULT_COEFF, PAULI_MULT_INDEX
+from .sparse_pauli_vector import SparsePauliVector
 
 
 @njit(nogil=True)
@@ -46,7 +47,7 @@ def _uniquify_fast(
 
 
 @njit(nogil=True)
-def _spv_sum_fast(
+def _spv_add_fast(
     indices1: np.ndarray,
     coeffs1: np.ndarray,
     indices2: np.ndarray,
@@ -102,7 +103,7 @@ def _spv_sum_fast(
     return indices[:iout], coeffs[:iout]
 
 
-def spv_sum_fast(
+def spv_add_fast(
     lhs: SparsePauliVector,
     rhs: SparsePauliVector,
     normalize: bool = False
@@ -112,12 +113,12 @@ def spv_sum_fast(
     if lhs.num_terms * lhs.num_terms == 0:
         return SparsePauliVector([], [], lhs.num_qubits, no_check=True)
 
-    indices, coeffs = _spv_sum_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs, normalize)
+    indices, coeffs = _spv_add_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs, normalize)
     return SparsePauliVector(indices, coeffs, lhs.num_qubits, no_check=True)
 
 
 @njit(nogil=True)
-def _spv_prod_fast(
+def _spv_matmul_fast(
     indices1: np.ndarray,
     coeffs1: np.ndarray,
     indices2: np.ndarray,
@@ -134,15 +135,15 @@ def _spv_prod_fast(
         paulis2 = np.asarray((indices2 // shift) % 4, dtype=np.int32)
         for i1, p1 in enumerate(paulis1):
             for i2, p2 in enumerate(paulis2):
-                indices[i1, i2] += PAULI_PROD_INDEX[p1, p2] * shift
-                coeffs[i1, i2] *= PAULI_PROD_COEFF[p1, p2]
+                indices[i1, i2] += PAULI_MULT_INDEX[p1, p2] * shift
+                coeffs[i1, i2] *= PAULI_MULT_COEFF[p1, p2]
 
     indices = indices.reshape(-1)
     coeffs = coeffs.reshape(-1)
     return _uniquify_fast(indices, coeffs, normalize)
 
 
-def spv_prod_fast(
+def spv_matmul_fast(
     lhs: SparsePauliVector,
     rhs: SparsePauliVector,
     normalize: bool = False
@@ -152,8 +153,8 @@ def spv_prod_fast(
     if lhs.num_terms * lhs.num_terms == 0:
         return SparsePauliVector([], [], lhs.num_qubits, no_check=True)
 
-    indices, coeffs = _spv_prod_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs,
-                                     lhs.num_qubits, normalize)
+    indices, coeffs = _spv_matmul_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs,
+                                       lhs.num_qubits, normalize)
     return SparsePauliVector(indices, coeffs, lhs.num_qubits, no_check=True)
 
 
@@ -175,15 +176,15 @@ def _spv_commutator_fast(
     paulis2 = np.asarray((indices2[:, None] // shifts[None, :]) % 4, dtype=np.int32)
     for i1, (pp1, coeff1) in enumerate(zip(paulis1, coeffs1)):
         for i2, (pp2, coeff2) in enumerate(zip(paulis2, coeffs2)):
-            pauli_prod_coeff = 1.
+            pauli_mult_coeff = 1.
             for iq in iqs:
-                pauli_prod_coeff *= PAULI_PROD_COEFF[pp1[iq], pp2[iq]]
-                indices[i1, i2] += PAULI_PROD_INDEX[pp1[iq], pp2[iq]] * shifts[iq]
+                pauli_mult_coeff *= PAULI_MULT_COEFF[pp1[iq], pp2[iq]]
+                indices[i1, i2] += PAULI_MULT_INDEX[pp1[iq], pp2[iq]] * shifts[iq]
 
-            if np.isclose(pauli_prod_coeff.imag, 0.):
+            if np.isclose(pauli_mult_coeff.imag, 0.):
                 continue
 
-            coeffs[i1, i2] = 2.j * coeff1 * coeff2 * pauli_prod_coeff.imag
+            coeffs[i1, i2] = 2.j * coeff1 * coeff2 * pauli_mult_coeff.imag
 
     indices = indices.reshape(-1)
     coeffs = coeffs.reshape(-1)
@@ -206,7 +207,7 @@ def spv_commutator_fast(
 
 
 @njit(nogil=True)
-def _spv_innerprod_fast(
+def _spv_dot_fast(
     indices1: np.ndarray,
     coeffs1: np.ndarray,
     indices2: np.ndarray,
@@ -228,10 +229,10 @@ def _spv_innerprod_fast(
     return result
 
 
-def spv_innerprod_fast(lhs: SparsePauliVector, rhs: SparsePauliVector) -> complex:
+def spv_dot_fast(lhs: SparsePauliVector, rhs: SparsePauliVector) -> complex:
     if lhs.num_qubits != lhs.num_qubits:
         raise ValueError('Matmul between incompatible SparsePauliVectors')
     if lhs.num_terms * lhs.num_terms == 0:
         return SparsePauliVector([], [], lhs.num_qubits, no_check=True)
 
-    return _spv_innerprod_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs)
+    return _spv_dot_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs)
