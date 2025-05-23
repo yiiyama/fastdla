@@ -1,10 +1,10 @@
 """Generators and symmetry projectors for Z2 lattice gauge theory HVA."""
-from collections.abc import Callable, Sequence
+from collections.abc import Sequence
 from typing import Optional
 import numpy as np
 from ..pauli import PAULIS
 from ..sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
-from ..eigenspace import get_eigenspace
+from ..eigenspace import LinearOpFunction, get_eigenspace
 
 
 def z2lgt_hva_generators(num_fermions: int) -> SparsePauliVectorArray:
@@ -71,7 +71,7 @@ def z2lgt_hva_generators(num_fermions: int) -> SparsePauliVectorArray:
     """
     num_qubits = 4 * num_fermions
 
-    generators = SparsePauliVectorArray(num_qubits)
+    generators = SparsePauliVectorArray(num_qubits=num_qubits)
 
     # Field term H_g
     strings = ['I' * (num_qubits - iq - 1) + 'X' + 'I' * iq for iq in range(1, num_qubits, 2)]
@@ -156,9 +156,7 @@ def z2lgt_gauss_local_projector(
     return SparsePauliVector(strings, coeffs)
 
 
-def z2lgt_gauss_projector(
-    eigvals: Sequence[int]
-) -> SparsePauliVector:
+def z2lgt_gauss_projector(eigvals: Sequence[int]) -> SparsePauliVector:
     r"""Construct the Gauss's law projector for the Z2 LGT model.
 
     Physical states of the Z2 LGT model must be eigenstates of
@@ -173,11 +171,12 @@ def z2lgt_gauss_projector(
     if (num_sites := len(eigvals)) % 2 or not all(abs(ev) == 1 for ev in eigvals):
         raise ValueError('There must be an even number of charges with values +-1')
 
+    num_fermions = num_sites // 2
     num_qubits = 2 * num_sites
 
     projector = SparsePauliVector('I' * num_qubits, 1.)
     for isite, ev in enumerate(eigvals):
-        projector = projector @ z2lgt_gauss_local_projector(num_sites, isite, ev)
+        projector = projector @ z2lgt_gauss_local_projector(num_fermions, isite, ev)
 
     return projector
 
@@ -229,7 +228,7 @@ def z2lgt_u1_projector(num_fermions: int, charge: int) -> SparsePauliVector:
     return SparsePauliVector(paulis, coeffs)
 
 
-def z2lgt_translation_projector(num_fermions: int, iroot: int) -> SparsePauliVector:
+def z2lgt_translation_projector(num_fermions: int, jphase: int) -> SparsePauliVector:
     """Construct the translation projector for the Z2 LGT model.
 
     The Z2 LGT HVA generators commute with the translation operator :math:`T_2`, which shifts state
@@ -239,7 +238,7 @@ def z2lgt_translation_projector(num_fermions: int, iroot: int) -> SparsePauliVec
     in terms of Pauli product sums, we first construct the projectors as dense matrices, then
     compute the inner products with Paulis.
     """
-    if iroot < 0 or iroot >= num_fermions:
+    if jphase < 0 or jphase >= num_fermions:
         raise ValueError('Invalid iroot value')
 
     num_qubits = 4 * num_fermions
@@ -258,7 +257,7 @@ def z2lgt_translation_projector(num_fermions: int, iroot: int) -> SparsePauliVec
         # Roll the binaries by 4 and recombine them into index integers
         shifted_indices = np.sum(np.roll(indices_bin, 4 * shift, axis=1) * powers[None, :], axis=1)
         # e^{-2πi/N_f jk}
-        phase_factor = np.exp(-2.j * np.pi * iroot * shift / num_fermions)
+        phase_factor = np.exp(-2.j * np.pi * jphase * shift / num_fermions)
         eigenstates[shifted_indices, indices] += phase_factor / num_fermions
     # From eigenstates = (|u_0>, |u_1>, ...) compute the projector = sum_j |u_j><u_j|
     # Each computational basis state is a part of n-cycle (n=prime factor of N_f).
@@ -282,15 +281,15 @@ def z2lgt_translation_projector(num_fermions: int, iroot: int) -> SparsePauliVec
     indices = np.nonzero(projector)[0]
     coeffs = projector[indices]
 
-    return SparsePauliVector(indices, coeffs)
+    return SparsePauliVector(indices, coeffs, num_qubits=num_qubits)
 
 
 def z2lgt_symmetry_eigenspace(
     gauss_eigvals: Sequence[int],
-    charge: Optional[int] = None,
-    t_iroot: Optional[int] = None,
+    u1_total_charge: Optional[int] = None,
+    t_jphase: Optional[int] = None,
     npmod=np
-):
+) -> np.ndarray:
     """Construct a full symmetry projector for the Z2 LGT model.
 
     The construction follows the projection algorithm for multiple symmetries proposed by LN. See
@@ -298,13 +297,13 @@ def z2lgt_symmetry_eigenspace(
 
     Returns a (pu, 2**nq) matrix.
     """
-    subspace = z2lgt_dense_gauss_eigenspace(gauss_eigvals, npmod=npmod)
-    if charge is not None:
-        subspace = z2lgt_dense_u1_eigenspace(subspace, charge, npmod=npmod)
-    if t_iroot is not None:
-        subspace = z2lgt_dense_translation_projector(subspace, t_iroot, npmod=npmod)
+    basis = z2lgt_dense_gauss_eigenspace(gauss_eigvals, npmod=npmod)
+    if u1_total_charge is not None:
+        basis = z2lgt_dense_u1_eigenspace(u1_total_charge, basis, npmod=npmod)
+    if t_jphase is not None:
+        basis = z2lgt_dense_translation_eigenspace(t_jphase, basis, npmod=npmod)
 
-    return np.asarray(subspace)
+    return basis
 
 
 def z2lgt_dense_gauss_eigenspace(
@@ -390,25 +389,41 @@ def z2lgt_dense_gauss_eigenspace(
     return basis.conjugate().T
 
 
-def z2lgt_dense_u1(
-    charge: int,
+def z2lgt_dense_u1_projection(
+    total_charge: int,
     num_fermions: int,
     npmod=np
-) -> Callable[[np.ndarray], np.ndarray]:
-    """Return a function that applies the total U(1) charge operation on state vectors."""
+) -> LinearOpFunction:
+    r"""Return a function that projects out the eigensubspace of the total U(1) charge for the
+    given eigenvalue.
+
+    If :math:`P_{\lambda}` is the projector to the eigensubspace for eigenvalue :math:`\lambda`,
+    :math:`P_{\lambda} - I` is the (negative) anti-projector. It also is a singular operator used in
+    the SVD eigenspace extraction algorithm (for the eigenspace of :math:`P_{\lambda}` with
+    eigenvalue 1).
+
+    Args:
+        total_charge: Unnormalized total charge (an eigenvalue of :math:`\sum_{n=0}^{N_s-1} Z_n`).
+        num_fermions: :math:`N_f`.
+
+    Returns:
+        A function that takes a basis matrix :math:`B` as an argument and computes
+        :math:`(N_s Q - q I)B`, where :math:`q` is the given total charge.
+    """
     num_sites = 2 * num_fermions
     num_qubits = 2 * num_sites
 
-    if abs(charge) > num_sites or charge % 2 != 0:
+    if abs(total_charge) > num_sites or total_charge % 2 != 0:
         raise ValueError('Invalid charge value')
 
-    # Charge projection
+    # Calculate the total charge for all site charge configurations
     eigvals = npmod.zeros((2,) * num_sites, dtype=int)
     z = npmod.array([1, -1])
     for isite in range(num_sites):
         eigvals += npmod.expand_dims(z, tuple(range(isite)) + tuple(range(isite + 1, num_sites)))
     eigvals = eigvals.reshape(-1)
-    wrong_charge_states = npmod.nonzero(npmod.logical_not(npmod.equal(eigvals, charge)))[0]
+    # Site charge configurations that correspond to the target total charge
+    target_charge_states = npmod.nonzero(npmod.equal(eigvals, total_charge))[0]
 
     def op(basis):
         """Return the singular matrix."""
@@ -416,8 +431,9 @@ def z2lgt_dense_u1(
         # Move the site axes to the front and reserialize
         transformed = npmod.moveaxis(transformed, tuple(range(1, num_qubits, 2)),
                                      tuple(range(num_sites)))
-        transformed = npmod.reshape(transformed, (2 ** num_sites,) + (2,) * num_sites + (-1,))
-        transformed[wrong_charge_states] = 0.
+        transformed = npmod.reshape(transformed, (2 ** num_sites, -1))
+        # Project out states with charge configurations giving the target total charge
+        transformed[target_charge_states] = 0.
         # Revert the axes
         transformed = npmod.reshape(transformed, (2,) * num_qubits + (-1,))
         transformed = npmod.moveaxis(transformed, tuple(range(num_sites)),
@@ -429,126 +445,77 @@ def z2lgt_dense_u1(
 
 
 def z2lgt_dense_u1_eigenspace(
-    charge: int,
+    total_charge: int,
     basis: Optional[np.ndarray] = None,
     num_fermions: Optional[int] = None,
     npmod=np
 ) -> np.ndarray:
-    """Project out the subspace corresponding to the U1 charge within the given projector.
+    r"""Extract the eigenspace of the U(1) symmetry for the given total charge.
 
-    Because the U(1) projector is diagonal, we can apply a similar algorithm to combine the Gauss
-    and U(1) projectors after the full Gauss projector is constructed. With the charge projector
-    Qu (shape (2**nq, 2**nq) diagonal), first project it onto the Gauss subspace using P(M-1) to
-    obtain Ru=P(M-1) Qu P(M-1)†. Then assemble the non-null eigenvectors into Su (shape (p(i), pu))
-    and update the global projector to Pg=Su†P(M-1).
+    Args:
+        total_charge: Unnormalized total charge (an eigenvalue of :math:`\sum_{n=0}^{N_s-1} Z_n`).
+        basis: The basis matrix :math:`B`.
+        num_fermions: :math:`N_f`.
+
+    Returns:
+        A matrix whose columns form the orthonormal basis of the eigen-subspace.
     """
     if num_fermions is None:
         num_fermions = np.round(np.log2(basis.shape[0])).astype(int) // 4
-    op = z2lgt_dense_u1(charge, num_fermions, npmod=npmod)
+    op = z2lgt_dense_u1_projection(total_charge, num_fermions, npmod=npmod)
     return get_eigenspace(op, basis, dim=2 ** (num_fermions * 4), npmod=npmod)
 
 
-def z2lgt_dense_charge_projector(
-    projector: np.ndarray,
-    c_eigval: int,
+def z2lgt_dense_translation(
+    jphase: int,
+    num_fermions: int,
     npmod=np
-) -> np.ndarray:
-    """Project out the subspace spanned by states with specific C eigenvalues from the projector.
+) -> tuple[LinearOpFunction, complex]:
+    r"""Return a function that applies the translation :math:`T_2` to state vectors.
 
-    Charge conjugation is defined as a reflection about sites 0-1 followed by X on all sites.
+    Args:
+        jphase: Integer :math:`j` of the :math:`T_2` eigenvalue :math:`e^{2\pi i j/N_f}`.
+        num_fermions: :math:`N_f`.
 
-    Since C does not commute with G_n and Q, we simply rely on linear algebra. Let P† represent
-    the given projector array (shape (p, 2**nq)). A vector in the space spanned by columns of P is
-    given by Pα, where α is a column vector with p entries. When this vector is an eigenvector of
-    C,
-        C Pα = c Pα ⇒ (C - cI)Pα = 0
-    If the SVD of (C - cI)P is UΣV†, α is the conjugate of a row of V† corresponding to a zero
-    singular value. We identify such αs and return the reduced projector [P (α0 α1 ...)]†.
+    Returns:
+        A function that takes a basis matrix :math:`B` and computes :math:`T_2 B` and the eigenvalue
+        :math:`e^{2\pi i j/N_f}`.
     """
-    if c_eigval not in [1, -1]:
-        raise ValueError('Invalid C eigenvalue')
+    num_qubits = num_fermions * 4
 
-    num_qubits = np.round(np.log2(projector.shape[1])).astype(int)
-    num_sites = num_qubits // 2
-
-    pmat = projector.conjugate().T
-
-    pdim = projector.shape[0]
-    conjugate = pmat.reshape((2,) * num_qubits + (pdim,))
-    swap = npmod.array([[1., 0., 0., 0.], [0., 0., 1., 0.], [0., 1., 0., 0.], [0., 0., 0., 1.]])
-    swap = swap.reshape((2,) * 4)
-    paulix = npmod.array([[0., 1.], [1., 0.]])
-    for iqubit in range(2, num_sites + 1):
-        # Swap qubit i and 2 - i
-        iax_src = num_qubits - iqubit - 1
-        iax_dest = num_qubits - ((2 - iqubit) % num_qubits) - 1
-        conjugate = npmod.moveaxis(
-            npmod.tensordot(swap, conjugate, [[2, 3], [iax_src, iax_dest]]),
-            [0, 1], [iax_src, iax_dest]
-        )
-
-    # Apply the X gate to each site
-    for isite in range(num_sites):
-        iax = num_qubits - isite * 2 - 1
-        conjugate = npmod.moveaxis(
-            npmod.tensordot(paulix, conjugate, [[1], [iax]]),
-            0, iax
-        )
-
-    conjugate = conjugate.reshape((2 ** num_qubits, pdim))
-    _, svals, vhmat = npmod.linalg.svd(conjugate - c_eigval * pmat, full_matrices=False)
-    indices = npmod.nonzero(npmod.isclose(svals, 0.))[0]
-    subspace = vhmat[indices]
-
-    projector = subspace @ projector
-
-    return projector
-
-
-def z2lgt_dense_translation_projector(
-    projector: np.ndarray,
-    t_iroot: int,
-    npmod=np
-) -> np.ndarray:
-    """Project out the subspace spanned by states with specific T eigenvalues from the projector.
-
-    Translation is defined by a positive shift of 2 site units (4 qubits) on all qubits.
-
-    Since T does not commute with G_n, we simply rely on linear algebra. Let P† represent
-    the given projector array (shape (p, 2**nq)). A vector in the space spanned by columns of P is
-    given by Pα, where α is a column vector with p entries. When this vector is an eigenvector of
-    T,
-        T Pα = ω^t Pα ⇒ (T - ω^tI)Pα = 0
-    where ω is the Nf-th root of identity.
-    If the SVD of (T - ω^tI)P is UΣV†, α is the conjugate of a row of V† corresponding to a zero
-    singular value. We identify such αs and return the reduced projector [P (α0 α1 ...)]†.
-    """
-    num_qubits = np.round(np.log2(projector.shape[1])).astype(int)
-    num_sites = num_qubits // 2
-    num_fermions = num_sites // 2
-
-    if t_iroot not in list(range(num_fermions)):
+    if jphase not in list(range(num_fermions)):
         raise ValueError('Invalid t_iroot value')
 
-    pmat = projector.conjugate().T
+    def op(basis):
+        """Translate the states in the basis."""
+        translated = npmod.array(basis).reshape((2,) * num_qubits + (-1,))
+        src = np.arange(num_qubits)
+        dest = np.roll(np.arange(num_qubits), -4)
+        translated = npmod.moveaxis(translated, src, dest)
+        translated = translated.reshape((2 ** num_qubits, -1))
+        return translated
 
-    pdim = projector.shape[0]
-    translated = pmat.reshape((2,) * num_qubits + (pdim,))
-    swap = npmod.array([[1., 0., 0., 0.], [0., 0., 1., 0.], [0., 1., 0., 0.], [0., 0., 0., 1.]])
-    swap = swap.reshape((2,) * 4)
-    for iax in range(num_qubits - 1, 3, -1):
-        # Swap qubits i and i - 4
-        translated = npmod.moveaxis(
-            npmod.tensordot(swap, translated, [[2, 3], [iax, iax - 4]]),
-            [0, 1], [iax, iax - 4]
-        )
+    eigval = np.exp(2.j * np.pi / num_fermions * jphase)
+    return op, eigval
 
-    translated = translated.reshape((2 ** num_qubits, pdim))
-    eigval = np.exp(2.j * np.pi / num_fermions * t_iroot)
-    _, svals, vhmat = np.linalg.svd(translated - eigval * pmat)
-    indices = np.nonzero(np.isclose(svals, 0.))[0]
-    subspace = vhmat[indices]
 
-    projector = subspace @ projector
+def z2lgt_dense_translation_eigenspace(
+    jphase: int,
+    basis: Optional[np.ndarray] = None,
+    num_fermions: Optional[int] = None,
+    npmod=np
+) -> np.ndarray:
+    r"""Extract the :math:`j`th eigenspace of the translation :math:`T_2`.
 
-    return projector
+    Args:
+        jphase: Integer :math:`j` of the :math:`T_2` eigenvalue :math:`e^{2\pi i j/N_f}`.
+        basis: The basis matrix :math:`B`.
+        num_fermions: :math:`N_f`.
+
+    Returns:
+        A matrix whose columns form the orthonormal basis of the eigen-subspace.
+    """
+    if num_fermions is None:
+        num_fermions = np.round(np.log2(basis.shape[0])).astype(int) // 4
+    op, eigval = z2lgt_dense_translation(jphase, num_fermions, npmod=npmod)
+    return get_eigenspace((op, eigval), basis, dim=2 ** (num_fermions * 4), npmod=npmod)
