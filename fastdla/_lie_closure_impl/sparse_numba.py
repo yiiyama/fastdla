@@ -66,7 +66,7 @@ def _linear_independence(
     for ib in range(basis_size):
         start, end = basis_ptrs[ib:ib + 2]
         ip = _spv_dot_fast(basis_indices[start:end], basis_coeffs[start:end],
-                                 new_indices, new_coeffs)
+                           new_indices, new_coeffs)
         pidag_q[ib] = ip
         is_zero &= np.isclose(ip.real, 0.) and np.isclose(ip.imag, 0.)
 
@@ -153,7 +153,7 @@ def _orthogonalize(
     for ib in range(basis_size):
         start, end = basis_ptrs[ib:ib + 2]
         ip = _spv_dot_fast(basis_indices[start:end], basis_coeffs[start:end],
-                                 new_indices, new_coeffs)
+                           new_indices, new_coeffs)
         if not np.isclose(ip, 0.):
             concat_coeffs[start:end] = -ip * basis_coeffs[start:end]
 
