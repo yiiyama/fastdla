@@ -2,29 +2,89 @@
 from collections.abc import Sequence
 from typing import Optional
 import numpy as np
-from ..sparse_pauli_vector import PAULIS, SparsePauliVector
+from ..pauli import PAULIS
+from ..sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
 
 
-def z2lgt_hva_generators(num_fermions: int) -> list[SparsePauliVector]:
-    """Construct generators of the HVA for the Z2 LGT model with periodic boundary condition for the
-    given number of staggered fermions."""
+def z2lgt_hva_generators(num_fermions: int) -> SparsePauliVectorArray:
+    r"""Construct the generators of the HVA for the 1+1-dimensional Z2 Lattice gauge theory model
+    with periodic boundary condition.
+
+    The Hamiltonian of the 1+1d LGT with :math:`N_f` Dirac fermions (:math:`N_s = 2 N_f` lattice
+    sites) and a periodic boundary condition is given by
+
+    .. math:: H = f H_{\mathrm{g}} + m H_{\mathrm{m}} + \frac{J}{2} H_{\mathrm{h}}
+
+    where
+
+    .. math::
+
+        H_{\mathrm{g}} = \sum_{n=0}^{N_s-1} X_{n,n+1}, \\
+        H_{\mathrm{m}} = \sum_{n=0}^{N_s-1} (-1)^n Z_n, \\
+        H_{\mathrm{h}} = \sum_{n=0}^{N_s-1} (X_n Z_{n,n+1} X_{n+1} + Y_n Z_{n,n+1} Y_{n+1}).
+
+    In the above expressions, :math:`P_n (P=X,Y,Z)` are the Pauli operators acting on site
+    :math:`n`, and :math:`P_{n,n+1} (P=X,Z)` are those acting on the link between sites :math:`n`
+    and :math:`n+1`. By the boundary condition, we identify site :math:`N_s` with site 0.
+
+    We then assume a register of :math:`4 N_f` qubits in a ring topology, and map site :math:`n` and
+    link :math:`n,n+1` to qubits :math:`2n` and :math:`2n+1`, respectively. Under this mapping, we
+    define the Hamiltonian variational ansatz (HVA) of this model as
+
+    .. math::
+
+        U(\vec{\theta}) = \prod_{l=0}^{L-1} e^{-i \theta_{l,0} H_{\mathrm{g}}}
+                                            e^{-i \theta_{l,1} H_{\mathrm{m}}^{\mathrm{(even)}}}
+                                            e^{-i \theta_{l,2} H_{\mathrm{m}}^{\mathrm{(odd)}}}
+                                            e^{-i \theta_{l,3} H_{\mathrm{h}}^{\mathrm{(even)}}}
+                                            e^{-i \theta_{l,4} H_{\mathrm{h}}^{\mathrm{(odd)}}}
+
+    where :math:`L` is the number of repeated circuit layers, and even (odd) superscripts indicate
+    taking the sum over even (odd) :math:`n` in the corresponding definition of the Hamiltonian
+    term.
+
+    The generators of the HVA
+
+    .. math::
+
+        \{ H_{\mathrm{g}}}, H_{\mathrm{m}}^{\mathrm{(even)}}}, H_{\mathrm{m}}^{\mathrm{(odd)}}},
+           H_{\mathrm{h}}^{\mathrm{(even)}}}, H_{\mathrm{h}}^{\mathrm{(odd)}}} \}
+
+    all commute with symmetry operators :math:`\{G_n\}_{n=0}^{N_s-1}` (Gauss's law), :math:`Q`
+    (total charge), and :math:`T_2` (translation). The definitions of :math:`G_n` and :math:`Q` are
+    given in terms of Pauli operators as
+
+    .. math::
+
+        G_n = X_{n-1,n} Z_n X_{n,n+1}, \\
+        Q = \frac{1}{N_s} \sum_{n=0}^{N_s-1} Z_n.
+
+    :math:`T_2` is defined as an operation that shifts site index by 2: :math:`n \to n+2` (qubit
+    index by 4), and can be implemented with a series of qubit swap operations.
+
+    Args:
+        num_fermions: Number of fermions :math:`N_f`.
+
+    Returns:
+        Five generators of the HVA.
+    """
     num_qubits = 4 * num_fermions
 
-    generators = []
+    generators = SparsePauliVectorArray(num_qubits)
 
-    # Mass terms Z_{n}
+    # Field term H_g
+    strings = ['I' * (num_qubits - iq - 1) + 'X' + 'I' * iq for iq in range(1, num_qubits, 2)]
+    coeffs = np.ones(len(strings)) / np.sqrt(len(strings))
+    generators.append(SparsePauliVector(strings, coeffs))
+
+    # Mass terms H_m (even and odd)
     for parity in [0, 1]:
         strings = ['I' * (num_qubits - isite * 2 - 1) + 'Z' + 'I' * (isite * 2)
                    for isite in range(parity, 2 * num_fermions, 2)]
         coeffs = np.ones(len(strings)) / np.sqrt(len(strings))
         generators.append(SparsePauliVector(strings, coeffs))
 
-    # Field term X_{n,n+1}
-    strings = ['I' * (num_qubits - iq - 1) + 'X' + 'I' * iq for iq in range(1, num_qubits, 2)]
-    coeffs = np.ones(len(strings)) / np.sqrt(len(strings))
-    generators.append(SparsePauliVector(strings, coeffs))
-
-    # Hopping terms X_{n}Z_{n,n+1}X_{n+1} + Y_{n}Z_{n,n+1}Y_{n+1}
+    # Hopping terms H_h (even and odd)
     for parity in [0, 1]:
         strings = []
         for isite in range(parity, 2 * num_fermions, 2):
@@ -45,10 +105,16 @@ def z2lgt_gauss_local_projector(
     isite: int,
     eigval: int
 ) -> SparsePauliVector:
-    """Construct the Gauss's law projector for the Z2 LGT model for a single matter site.
+    r"""Construct the Gauss's law projector for the Z2 LGT model for a single matter site.
 
-    Physical states of the Z2 LGT model must be eigenstates of G_n = X_{n-1,n}Z_{n}X_{n1,n+1}. Given
-    an eigenvalue for each G_n, we can construct a projector to its subspace as a sum of Pauli ops.
+    Physical states of the Z2 LGT model must be eigenstates of
+
+    .. math::
+
+        G_n = X_{n-1,n}Z_{n}X_{n1,n+1}.
+
+    Given an eigenvalue for each G_n, we can construct a projector to its subspace as a sum of Pauli
+    ops.
     """
     if abs(eigval) != 1:
         raise ValueError('Charge value must be +-1')
@@ -92,11 +158,16 @@ def z2lgt_gauss_local_projector(
 def z2lgt_gauss_projector(
     eigvals: Sequence[int]
 ) -> SparsePauliVector:
-    """Construct the Gauss's law projector for the Z2 LGT model.
+    r"""Construct the Gauss's law projector for the Z2 LGT model.
 
-    Physical states of the Z2 LGT model must be eigenstates of G_n = X_{n-1,n}Z_{n}X_{n1,n+1}. Given
-    an eigenvalue for each G_n, we can construct a projector to its subspace as a sum of Pauli ops.
-    The overall projector will then be a product of all such projectors.
+    Physical states of the Z2 LGT model must be eigenstates of
+
+    .. math::
+
+        G_n = X_{n-1,n}Z_{n}X_{n1,n+1}.
+
+    Given an eigenvalue for each G_n, we can construct a projector to its subspace as a sum of Pauli
+    ops. The overall projector will then be a product of all such projectors.
     """
     if (num_sites := len(eigvals)) % 2 or not all(abs(ev) == 1 for ev in eigvals):
         raise ValueError('There must be an even number of charges with values +-1')
@@ -111,11 +182,16 @@ def z2lgt_gauss_projector(
 
 
 def z2lgt_u1_projector(num_fermions: int, charge: int) -> SparsePauliVector:
-    """Construct the charge conservation law projector for the Z2 LGT model.
+    r"""Construct the charge conservation law projector for the Z2 LGT model.
 
-    Physical states of the Z2 LGT model must be eigenstates of Q = ∑_n Z_n where n runs over
-    staggered fermions (even n: particle, odd n: antiparticle). For a fermion number F and an
-    overall charge q ∈ [-2F,...,2F], we have a 2F C (F+q/2) -dimensional eigenspace.
+    Physical states of the Z2 LGT model must be eigenstates of
+
+    .. math::
+
+        Q = \frac{1}{N_s} \sum_{n=0}^{N_s-1} Z_n.
+
+    For a fermion number :math:`N_f` and an overall charge :math:`q \in [-2N_f,...,2N_f]`, we have a
+    :math:`{}_{2N_f} C_(N_f+q/2)`-dimensional eigenspace.
     """
     if abs(charge) > (num_sites := 2 * num_fermions) or charge % 2 != 0:
         raise ValueError('Invalid charge value')
@@ -155,9 +231,9 @@ def z2lgt_u1_projector(num_fermions: int, charge: int) -> SparsePauliVector:
 def z2lgt_translation_projector(num_fermions: int, iroot: int) -> SparsePauliVector:
     """Construct the translation projector for the Z2 LGT model.
 
-    The Z2 LGT HVA generators commute with the translation operator T, which shifts state indices
-    by 1 fermion unit (2 sites, 4 qubits). Therefore, if the initial state of a VQA is a translation
-    eigenstate, the variational evolution of the state stays within the same eigenspace.
+    The Z2 LGT HVA generators commute with the translation operator :math:`T_2`, which shifts state
+    indices by 1 fermion unit (2 sites, 4 qubits). Therefore, if the initial state of a VQA is a
+    translation eigenstate, the variational evolution of the state stays within the same eigenspace.
     Since it is quite nontrivial to directly express the translation operator eigenspace projectors
     in terms of Pauli product sums, we first construct the projectors as dense matrices, then
     compute the inner products with Paulis.
@@ -168,35 +244,49 @@ def z2lgt_translation_projector(num_fermions: int, iroot: int) -> SparsePauliVec
     num_qubits = 4 * num_fermions
 
     # Construct the translation eigenstates from computational basis states
+    # Translation eigenstate can be constructed from an arbitrary state |ψ> by
+    #    |ψ_Tj> = sum_k e^{-2πi/N_f jk} T^k |ψ>
+    # with an appropriate normalization.
+    # This will be the full collection of column eigenvectors
     eigenstates = np.eye(2 ** num_qubits, dtype=np.complex128) / num_fermions
     powers = 1 << np.arange(num_qubits)[::-1]
     indices = np.arange(2 ** num_qubits)
+    # Binary indices [[0, ..., 0, 0], [0, ..., 0, 1], ...]
     indices_bin = (indices[:, None] // powers[None, :]) % 2
     for shift in range(1, num_fermions):
+        # Roll the binaries by 4 and recombine them into index integers
         shifted_indices = np.sum(np.roll(indices_bin, 4 * shift, axis=1) * powers[None, :], axis=1)
+        # e^{-2πi/N_f jk}
         phase_factor = np.exp(-2.j * np.pi * iroot * shift / num_fermions)
         eigenstates[shifted_indices, indices] += phase_factor / num_fermions
-    # Eigenstates = (|u_0>, |u_1>, ...)
-    # Projector = sum_j |u_j><u_j|
+    # From eigenstates = (|u_0>, |u_1>, ...) compute the projector = sum_j |u_j><u_j|
+    # Each computational basis state is a part of n-cycle (n=prime factor of N_f).
+    # After the above procedure, there are N_f/n columns that share the same n-cycle.
+    # Since each column is a sum of N_f terms uniformly normalized by N_f, the summation results in
+    # a proper orthonormal projector.
     projector = eigenstates @ eigenstates.conjugate().T
 
     # Pauli decomposition through iterative partial traces
     projector = projector.reshape((2,) * (2 * num_qubits))
+    # (p, row, column) . (row_{N_q-1}, ..., row_{0}, col_{N_q-1}, ..., col_{0})
+    # -> (p, row, column) . (p_{N_q-1}, row_{N_q-2}, ..., row_{0}, col_{N_q-2}, ..., col_{0})
+    # -> (p, row, column) . (p_{N_q-2}, p_{N_q-1}, ..., row_{0}, col_{N_q-3}, ..., col_{0})
+    # -> ...
+    # -> (p_{0}, p_{1}, ..., p_{N_q-1})
     for iq in range(num_qubits):
         projector = np.tensordot(PAULIS, projector, [[1, 2], [num_qubits, iq]]) / 2.
 
     # Sparsify
     projector = np.reshape(np.transpose(projector), -1)
-    paulis = np.nonzero(projector)[0]
-    coeffs = projector[paulis]
+    indices = np.nonzero(projector)[0]
+    coeffs = projector[indices]
 
-    return SparsePauliVector(paulis, coeffs)
+    return SparsePauliVector(indices, coeffs)
 
 
 def z2lgt_dense_projector(
     gauss_eigvals: Sequence[int],
     charge: Optional[int] = None,
-    c_eigval: Optional[int] = None,
     t_iroot: Optional[int] = None,
     npmod=np
 ):
@@ -210,8 +300,6 @@ def z2lgt_dense_projector(
     projector = z2lgt_dense_gauss_projector(gauss_eigvals, npmod=npmod)
     if charge is not None:
         projector = z2lgt_dense_u1_projector(projector, charge, npmod=npmod)
-    if c_eigval is not None:
-        projector = z2lgt_dense_charge_projector(projector, c_eigval, npmod=npmod)
     if t_iroot is not None:
         projector = z2lgt_dense_translation_projector(projector, t_iroot, npmod=npmod)
 
