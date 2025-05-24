@@ -433,7 +433,10 @@ def z2lgt_dense_u1_projection(
                                      tuple(range(num_sites)))
         transformed = npmod.reshape(transformed, (2 ** num_sites, -1))
         # Project out states with charge configurations giving the target total charge
-        transformed[target_charge_states] = 0.
+        if npmod is np:
+            transformed[target_charge_states] = 0.
+        else:
+            transformed = transformed.at[target_charge_states].set(0.)
         # Revert the axes
         transformed = npmod.reshape(transformed, (2,) * num_qubits + (-1,))
         transformed = npmod.moveaxis(transformed, tuple(range(num_sites)),
