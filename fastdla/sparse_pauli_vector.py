@@ -282,6 +282,13 @@ class SparsePauliVectorArray:
         array.ptrs = list(matrix.indptr)
         return array
 
+    def to_matrices(self, *, sparse: bool = False, npmod=np) -> np.ndarray:
+        matrices = npmod.empty((len(self), 2 ** self.num_qubits, 2 ** self.num_qubits),
+                               dtype=np.complex128)
+        for ivec, vec in enumerate(self):
+            matrices[ivec] = vec.to_matrix(sparse=sparse, npmod=npmod)
+        return matrices
+
 
 def _uniquify(
     indices: np.ndarray,
