@@ -192,6 +192,7 @@ def _update_loop(
     basis_coeffs: np.ndarray,
     basis_ptrs: list[int],
     xmat: np.ndarray,
+    max_dim: int,
     verbosity: int
 ):
     """Loop through the calculated commutators and update the basis with independent elements."""
@@ -224,6 +225,9 @@ def _update_loop(
         basis_indices, basis_coeffs, xmat, xinv = _if_independent_update(
             indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, xmat, xinv
         )
+
+        if len(basis_ptrs) - 1 == max_dim:
+            break
 
     return basis_indices, basis_coeffs, xmat
 
@@ -275,6 +279,9 @@ def lie_closure(
             )
     else:
         raise NotImplementedError()
+
+    if len(basis) >= max_dim:
+        return basis
 
     if max_workers is not None:
         max_workers = min(max_workers, cpu_count())
@@ -336,11 +343,15 @@ def lie_closure(
             old_dim = len(basis)
             basis.indices, basis.coeffs, xmat = _update_loop(
                 result_indices, result_coeffs, basis.indices, basis.coeffs, basis.ptrs, xmat,
-                verbosity
+                max_dim, verbosity
             )
             new_dim = len(basis)
             if verbosity > 2:
                 print(f'Found {new_dim - old_dim} new ops in {time.time() - main_loop_start:.2f}s')
+
+            if new_dim == max_dim:
+                executor.shutdown(wait=False, cancel_futures=True)
+                break
 
             # Calculate the commutators between the new basis elements and all others
             calculate_commutators(old_dim)
@@ -352,12 +363,5 @@ def lie_closure(
                 print(f'Current DLA dimension: {new_dim}')
             if verbosity > 2:
                 print(f'Outer loop took {time.time() - outer_loop_start:.2f}s')
-
-            if max_dim is not None and new_dim >= max_dim:
-                basis.ptrs = basis.ptrs[:max_dim + 1]
-                basis.indices = basis.indices[:basis.ptrs[-1]]
-                basis.coeffs = basis.coeffs[:basis.ptrs[-1]]
-                executor.shutdown(wait=False, cancel_futures=True)
-                break
 
     return basis

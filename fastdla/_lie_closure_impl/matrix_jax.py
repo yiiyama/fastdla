@@ -247,15 +247,19 @@ def lie_closure(
                                  updater=_if_orthogonal_update, verbosity=verbosity)
         aux = ()
 
+    if basis_size >= max_dim:
+        return np.asarray(basis[:basis_size])
+
     idx1, idx2 = 1, 0
     while True:  # Outer loop to handle memory reallocation
         main_loop_start = time.time()
         # Main (inner) loop: iteratively compute the next commutator and update the basis based on
         # the current one
         idx1, idx2, basis, new_size, aux = jax.lax.while_loop(
-            lambda val: jnp.logical_and(
-                jnp.not_equal(val[0], val[3]),  # idx1 == new_size -> commutator exhausted
-                jnp.not_equal(val[3], basis.shape[0])  # new_size == array size -> need reallocation
+            lambda val: jnp.logical_not(
+                (val[0] == val[3])  # idx1 == new_size -> commutator exhausted
+                | (val[3] == max_dim)  # new_size == max_dim -> reached max dim
+                | (val[3] == basis.shape[0])  # new_size == array size -> need reallocation
             ),
             main_loop_body,
             (idx1, idx2, basis, basis_size, aux)
@@ -266,13 +270,8 @@ def lie_closure(
 
         basis_size = new_size
 
-        if idx1 == basis_size:
+        if idx1 == basis_size or basis_size == max_dim:
             # Computed all commutators
-            break
-
-        if max_dim is not None and basis_size >= max_dim:
-            # Cutting off
-            basis = basis[:max_dim]
             break
 
         # Need to resize basis and xmat
