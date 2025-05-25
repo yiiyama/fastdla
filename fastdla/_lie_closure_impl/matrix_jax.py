@@ -40,20 +40,20 @@ def _linear_independence(
     new_op: Array,
     basis: Array,
     xinv: Array
-) -> bool:
+) -> tuple[bool, Array]:
     """Check linear independence of a matrix with respect to the basis."""
     def _residual(_new_op, _basis, _xinv, _pidag_q):
         # Residual calculation: subtract Pi*ai from Q directly
         a_proj = _xinv @ _pidag_q
         residual = _new_op - jnp.sum(_basis * a_proj[:, None, None], axis=0)
-        return jnp.logical_not(jnp.allclose(residual, 0.))
+        return jnp.logical_not(jnp.allclose(residual, 0.)), _pidag_q
 
     # Compute the Π†Q vector
     pidag_q = _innerprod(basis, new_op)
     # If pidag_q is non-null, compute the residual
     return jax.lax.cond(
         jnp.allclose(pidag_q, 0.),
-        lambda a, b, c, d: True,
+        lambda a, b, c, _pidag_q: (True, _pidag_q),
         _residual,
         new_op, basis, xinv, pidag_q
     )
@@ -79,7 +79,7 @@ def linear_independence(
     if xinv is None:
         xinv = jnp.linalg.inv(_innerprod(basis, basis))
 
-    return _linear_independence(new_op, basis, xinv)
+    return _linear_independence(new_op, basis, xinv)[0]
 
 
 @jax.jit
@@ -109,26 +109,6 @@ def orthogonalize(
 
 
 @jax.jit
-def _update_basis(op: Array, basis: Array, size: Array, xmat: Array) -> tuple[Array, int, Array]:
-    """Append a new matrix to the basis and extend the X matrix accordingly.
-
-    Args:
-        op: New matrix to be added to the basis.
-        basis: Current basis of the Lie algebra.
-        size: Current size (dimension) of the basis.
-        xmat: Current X matrix.
-
-    Returns:
-        The updated basis, new basis size, and the updated X matrix.
-    """
-    new_col = _innerprod(basis, op)
-    xmat = xmat.at[:, size].set(new_col).at[size, :].set(new_col.conjugate())
-    xmat = xmat.at[size, size].set(1.)
-    basis = basis.at[size].set(op)
-    return basis, size + 1, xmat
-
-
-@jax.jit
 def _if_independent_update(
     op: Array,
     basis: Array,
@@ -137,19 +117,19 @@ def _if_independent_update(
     xinv: Array
 ) -> tuple[Array, int, Array, Array]:
     """Update the basis and the X matrix with op if it is independent."""
-    def _continue(_, _basis, _size, _xmat, _xinv):
-        return _basis, _size, _xmat, _xinv
+    def _update(_op, _new_xcol, _basis, _size, _xmat, _):
+        _basis = _basis.at[_size].set(_op)
+        _xmat = _xmat.at[:, _size].set(_new_xcol).at[size, :].set(_new_xcol.conjugate())
+        _xmat = _xmat.at[_size, _size].set(1.)
+        return _basis, _size + 1, _xmat, jnp.linalg.inv(_xmat)
 
-    def _update(_comm, _basis, _size, _xmat, _xinv):
-        _basis, _size, _xmat = _update_basis(_comm, _basis, _size, _xmat)
-        _xinv = jnp.linalg.inv(_xmat)
-        return _basis, _size, _xmat, _xinv
+    is_independent, new_xcol = _linear_independence(op, basis, xinv)
 
     return jax.lax.cond(
-        _linear_independence(op, basis, xinv),
+        is_independent,
         _update,
-        _continue,
-        op, basis, size, xmat, xinv
+        lambda _op, _new_xcol, _basis, _size, _xmat, _xinv: (_basis, _size, _xmat, _xinv),
+        op, new_xcol, basis, size, xmat, xinv
     )
 
 
