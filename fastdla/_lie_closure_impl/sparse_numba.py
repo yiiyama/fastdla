@@ -13,43 +13,6 @@ MEM_ALLOC_UNIT = SparsePauliVectorArray.MEM_ALLOC_UNIT
 DEBUG_NO_JIT = False
 
 
-def _update_xmatrix(
-    xmat: np.ndarray,
-    basis_indices: np.ndarray,
-    basis_coeffs: np.ndarray,
-    basis_ptrs: list[int],
-    rows: list[int],
-    cols: list[int]
-):
-    """Update the X matrix of inner products of Lie algebra basis elements.
-
-    The matrix is updated in place.
-
-    Args:
-        current: Current matrix.
-        basis: The basis (list of linearly independent elements) of the Lie Algebra.
-        coordinates: The (row, col) coordinates of the matrix elements to calculate. Only entries
-            with col > row are required since the X matrix is Hermitian.
-    """
-    # Compute the inner products of basis elements for each coordinate.
-    for row, col in zip(rows, cols):
-        row_start, row_end = basis_ptrs[row:row + 2]
-        col_start, col_end = basis_ptrs[col:col + 2]
-        ip = _spv_dot_fast(
-            basis_indices[row_start:row_end],
-            basis_coeffs[row_start:row_end],
-            basis_indices[col_start:col_end],
-            basis_coeffs[col_start:col_end]
-        )
-        xmat[row, col] = ip
-        # Update the transposed coordinate
-        xmat[col, row] = ip.conjugate()
-
-
-if not DEBUG_NO_JIT:
-    _update_xmatrix = njit(_update_xmatrix)
-
-
 def _linear_independence(
     new_indices: np.ndarray,
     new_coeffs: np.ndarray,
@@ -57,7 +20,7 @@ def _linear_independence(
     basis_coeffs: np.ndarray,
     basis_ptrs: list[int],
     xinv: np.ndarray
-) -> bool:
+) -> tuple[bool, np.ndarray]:
     """Check linear independence of a new Pauli vector."""
     basis_size = len(basis_ptrs) - 1
     # Create and fill the Π†Q vector
@@ -72,7 +35,7 @@ def _linear_independence(
 
     if is_zero:
         # Q is orthogonal to all basis vectors
-        return True
+        return True, pidag_q
 
     # Solve for a: X^{-1}Π†Q
     a_proj = xinv @ pidag_q
@@ -98,7 +61,7 @@ def _linear_independence(
         current_pos = next_pos
 
     indices, _ = _uniquify_fast(concat_indices, concat_coeffs, False)
-    return indices.shape[0] != 0
+    return indices.shape[0] != 0, pidag_q
 
 
 if not DEBUG_NO_JIT:
@@ -123,21 +86,25 @@ def linear_independence(
         True if Q is linearly independent from all elements of the basis.
     """
     if xinv is None:
-        xmat = np.eye(len(basis), dtype=basis.coeffs.dtype)
-        if len(basis) == 1:
-            # _update_xmatrix compilation fails if rows and cols are empty
-            xinv = xmat
-        else:
-            rows, cols = [], []
-            for row in range(len(basis) - 1):
-                rows += [row] * (len(basis) - 1 - row)
-                cols += list(range(row + 1, len(basis)))
-            _update_xmatrix(xmat, basis.indices, basis.coeffs, basis.ptrs, rows, cols)
-            xinv = np.linalg.inv(xmat)
+        xmat = np.eye((basis_size := len(basis)), dtype=basis.coeffs.dtype)
+        for col in range(1, basis_size):
+            col_start, col_end = basis.ptrs[col:col + 2]
+            for row in range(col):
+                row_start, row_end = basis.ptrs[row:row + 2]
+                ip = _spv_dot_fast(
+                    basis.indices[row_start:row_end],
+                    basis.coeffs[row_start:row_end],
+                    basis.indices[col_start:col_end],
+                    basis.coeffs[col_start:col_end]
+                )
+                xmat[row, col] = ip
+                xmat[col, row] = ip.conjugate()
+
+        xinv = np.linalg.inv(xmat)
 
     return _linear_independence(new_op.indices, new_op.coeffs,
                                 basis.indices, basis.coeffs, basis.ptrs,
-                                xinv)
+                                xinv)[0]
 
 
 def _orthogonalize(
@@ -178,7 +145,9 @@ def orthogonalize(
 
 def _if_independent_update(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, xmat, xinv):
     """Update the basis if (indices, coeffs) represent an independent operator."""
-    if not _linear_independence(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, xinv):
+    is_independent, new_xcol = _linear_independence(indices, coeffs, basis_indices, basis_coeffs,
+                                                    basis_ptrs, xinv)
+    if not is_independent:
         return basis_indices, basis_coeffs, xmat, xinv
 
     next_ptr = basis_ptrs[-1] + indices.shape[0]
@@ -205,10 +174,10 @@ def _if_independent_update(indices, coeffs, basis_indices, basis_coeffs, basis_p
         new_xmat = np.eye(xmat.shape[0] + BASIS_ALLOC_UNIT, dtype=xmat.dtype)
         new_xmat[:xmat.shape[0], :xmat.shape[0]] = xmat
         xmat = new_xmat
-    rows = list(range(basis_size - 1))  # rows above the diagonal at column (size - 1)
-    cols = [basis_size - 1] * (basis_size - 1)
-    _update_xmatrix(xmat, basis_indices, basis_coeffs, basis_ptrs, rows, cols)
+    xmat[:basis_size - 1, basis_size - 1] = new_xcol
+    xmat[basis_size - 1, :basis_size - 1] = new_xcol.conjugate()
     xinv = np.linalg.inv(xmat[:basis_size, :basis_size])
+
     return basis_indices, basis_coeffs, xmat, xinv
 
 
@@ -289,10 +258,11 @@ def lie_closure(
     if len(generators) == 0:
         return generators
 
+    generators = generators.normalize()
     max_dim = max_dim or 4 ** generators.num_qubits - 1
 
     # Allocate the basis and X arrays and compute the initial basis
-    basis = SparsePauliVectorArray([generators[0].normalize()])
+    basis = SparsePauliVectorArray([generators[0]])
 
     if keep_original:
         # Allocate a large matrix to embed X in
