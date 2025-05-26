@@ -80,7 +80,7 @@ def get_eigenspace(
 
     if eigenvalue is not None:
         if basis is None:
-            singular_mat[np.arange(dim), np.arange(dim)] -= eigenvalue
+            singular_mat -= eigenvalue * npmod.eye(dim)
         else:
             singular_mat -= eigenvalue * basis
 
