@@ -40,7 +40,7 @@ def _uniquify_fast(
         normsq += np.square(out_real) + np.square(out_imag)
         iout += 1
 
-    if normalize:
+    if normalize and not np.isclose(normsq, 0.):
         coeffs_unique /= np.sqrt(normsq)
 
     return indices_unique[:iout], coeffs_unique[:iout]
