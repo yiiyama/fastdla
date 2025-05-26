@@ -4,6 +4,7 @@ from typing import Optional
 import numpy as np
 from ..pauli import PAULIS
 from ..sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
+from .spin_chain import translation, translation_eigenspace
 from ..eigenspace import LinearOpFunction, get_eigenspace
 
 
@@ -486,21 +487,7 @@ def z2lgt_dense_translation(
         :math:`e^{2\pi i j/N_f}`.
     """
     num_qubits = num_fermions * 4
-
-    if jphase not in list(range(num_fermions)):
-        raise ValueError('Invalid t_iroot value')
-
-    def op(basis):
-        """Translate the states in the basis."""
-        translated = npmod.array(basis).reshape((2,) * num_qubits + (-1,))
-        src = np.arange(num_qubits)
-        dest = np.roll(np.arange(num_qubits), -4)
-        translated = npmod.moveaxis(translated, src, dest)
-        translated = translated.reshape((2 ** num_qubits, -1))
-        return translated
-
-    eigval = np.exp(2.j * np.pi / num_fermions * jphase)
-    return op, eigval
+    return translation(jphase, num_qubits, shift=4, npmod=npmod)
 
 
 def z2lgt_dense_translation_eigenspace(
@@ -521,5 +508,5 @@ def z2lgt_dense_translation_eigenspace(
     """
     if num_fermions is None:
         num_fermions = np.round(np.log2(basis.shape[0])).astype(int) // 4
-    op, eigval = z2lgt_dense_translation(jphase, num_fermions, npmod=npmod)
-    return get_eigenspace((op, eigval), basis, dim=2 ** (num_fermions * 4), npmod=npmod)
+    return translation_eigenspace(jphase, basis=basis, num_spins=num_fermions * 4, shift=4,
+                                  npmod=npmod)
