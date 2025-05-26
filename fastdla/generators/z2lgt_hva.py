@@ -407,8 +407,9 @@ def z2lgt_dense_u1_projection(
         num_fermions: :math:`N_f`.
 
     Returns:
-        A function that takes a basis matrix :math:`B` as an argument and computes
-        :math:`(N_s Q - q I)B`, where :math:`q` is the given total charge.
+        A function that takes a basis matrix :math:`B` as an argument and projects out the
+        eigensubspace corresponding to eigenvalue :math:`q / N_s`, where :math:`q` is the given
+        total charge.
     """
     num_sites = 2 * num_fermions
     num_qubits = 2 * num_sites
