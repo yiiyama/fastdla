@@ -39,11 +39,12 @@ def _linear_independence(
 
     if is_zero:
         # Q is orthogonal to all basis vectors
-        # if log_level <= logging.DEBUG:
-        #     pauli_sum = 'abc'
-        #     #pauli_sum = str(list(zip(new_indices, new_coeffs)))
-        #     with objmode():
-        #         LOG.debug('%s is orthogonal to all basis vectors', pauli_sum)
+        if log_level <= logging.DEBUG:
+            with objmode():
+                pauli_sum = []
+                for t in zip(new_indices, new_coeffs):
+                    pauli_sum.append(str(t))
+                LOG.debug('%s is orthogonal to all basis vectors', ','.join(pauli_sum))
 
         return True, pidag_q
 
@@ -75,17 +76,15 @@ def _linear_independence(
     indices, _ = _uniquify_fast(concat_indices, concat_coeffs, False)
     is_independent = indices.shape[0] != 0
 
-    # if log_level <= logging.DEBUG:
-    #     #pauli_sum = str(list(zip(new_indices, new_coeffs)))
-    #     pauli_sum = 'abc'
-    #     num_overlaps = len(nonzero_idx)
-    #     with objmode():
-    #         if indices.shape[0] == 0:
-    #             LOG.debug('%s exists in the span and overlaps with %d basis vectors',
-    #                       pauli_sum, num_overlaps)
-    #         else:
-    #             LOG.debug('%s has overlaps with %d basis vectors but is linearly independent',
-    #                       pauli_sum, num_overlaps)
+    if log_level <= logging.DEBUG:
+        num_overlaps = len(nonzero_idx)
+        with objmode():
+            if is_independent:
+                LOG.debug('New op has overlaps with %d basis vectors but is linearly independent',
+                          num_overlaps)
+            else:
+                LOG.debug('New op exists in the span and overlaps with %d basis vectors',
+                          num_overlaps)
 
     return is_independent, pidag_q
 
