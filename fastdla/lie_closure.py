@@ -1,9 +1,11 @@
 # pylint: disable=import-outside-toplevel
 """Generator of Lie closure."""
 from collections.abc import Sequence
+import logging
 from typing import Any, Optional
 from fastdla.sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
 
+LOG = logging.getLogger(__name__)
 AlgebraElement = Any
 Basis = Sequence[AlgebraElement]
 InnerProductMatrix = Any
@@ -71,7 +73,6 @@ def lie_closure(
     *,
     keep_original: bool = True,
     max_dim: Optional[int] = None,
-    verbosity: int = 0,
     **kwargs
 ) -> Basis:
     """Compute the Lie closure of given generators.
@@ -120,5 +121,4 @@ def lie_closure(
     else:
         from fastdla._lie_closure_impl.matrix_jax import lie_closure as fn
 
-    return fn(generators, keep_original=keep_original, max_dim=max_dim, verbosity=verbosity,
-              **kwargs)
+    return fn(generators, keep_original=keep_original, max_dim=max_dim, **kwargs)

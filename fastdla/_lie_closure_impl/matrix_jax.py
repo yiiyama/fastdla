@@ -1,6 +1,7 @@
 """Implementation of the Lie closure generator using JAX matrices."""
 from collections.abc import Sequence
 from functools import partial
+import logging
 from typing import Optional
 import time
 import numpy as np
@@ -8,6 +9,7 @@ import jax
 from jax import Array
 import jax.numpy as jnp
 
+LOG = logging.getLogger(__name__)
 BASIS_ALLOC_UNIT = 1024
 
 
@@ -155,8 +157,8 @@ def _if_orthogonal_update(
     )
 
 
-@partial(jax.jit, static_argnames=['updater', 'verbosity'])
-def _main_loop_body(val, updater, verbosity=0):
+@partial(jax.jit, static_argnames=['updater', 'log_level'])
+def _main_loop_body(val, updater, log_level=0):
     """Compute the commutator and update the basis with orthogonal components."""
     def _continue(_, _basis, _basis_size, _aux):
         return _basis, _basis_size, _aux
@@ -169,7 +171,7 @@ def _main_loop_body(val, updater, verbosity=0):
 
     idx1, idx2, basis, basis_size, aux = val
 
-    if verbosity > 1:
+    if log_level <= logging.INFO:
         icomm = (idx1 * (idx1 + 1)) // 2 + idx2
         jax.lax.cond(
             jnp.equal(icomm % 2000, 0),
@@ -202,8 +204,7 @@ def lie_closure(
     generators: Sequence[np.ndarray],
     *,
     keep_original: bool = True,
-    max_dim: Optional[int] = None,
-    verbosity: int = 0,
+    max_dim: Optional[int] = None
 ) -> list[np.ndarray]:
     """Compute the Lie closure of given generators.
 
@@ -213,7 +214,6 @@ def lie_closure(
             orthonormalized Lie algebra elements are kept in memory to speed up the calculation.
         max_dim: Cutoff for the dimension of the Lie closure. If set, the algorithm may be halted
             before a full closure is obtained.
-        verbosity: Verbosity level.
 
     Returns:
         A basis of the Lie closure.
@@ -237,14 +237,14 @@ def lie_closure(
                                                                    basis_size, xmat, xinv)
 
         main_loop_body = partial(_main_loop_body,
-                                 updater=_if_independent_update, verbosity=verbosity)
+                                 updater=_if_independent_update, log_level=LOG.getEffectiveLevel())
         aux = (xmat, xinv)
     else:
         for op in generators[1:]:
             basis, basis_size = _if_orthogonal_update(op, basis, basis_size)
 
         main_loop_body = partial(_main_loop_body,
-                                 updater=_if_orthogonal_update, verbosity=verbosity)
+                                 updater=_if_orthogonal_update, log_level=LOG.getEffectiveLevel())
         aux = ()
 
     if basis_size >= max_dim:
@@ -265,8 +265,8 @@ def lie_closure(
             (idx1, idx2, basis, basis_size, aux)
         )
 
-        if verbosity > 0:
-            print(f'Found {new_size - basis_size} new ops in {time.time() - main_loop_start:.2f}s')
+        LOG.info('Found %d new ops in %.2fs',
+                 new_size - basis_size, time.time() - main_loop_start)
 
         basis_size = new_size
 
@@ -275,8 +275,7 @@ def lie_closure(
             break
 
         # Need to resize basis and xmat
-        if verbosity > 0:
-            print(f'Resizing basis array to {max_size + BASIS_ALLOC_UNIT}')
+        LOG.debug('Resizing basis array to %d', max_size + BASIS_ALLOC_UNIT)
 
         max_size += BASIS_ALLOC_UNIT
         basis = jnp.resize(basis, (max_size,) + basis.shape[1:]).at[basis_size:].set(0.)
