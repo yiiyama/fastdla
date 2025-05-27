@@ -28,14 +28,16 @@ def _linear_independence(
     """Check linear independence of a new Pauli vector."""
     basis_size = len(basis_ptrs) - 1
     # Create and fill the Π†Q vector
-    pidag_q = np.empty(basis_size, dtype=np.complex128)
+    pidag_q = np.zeros(basis_size, dtype=np.complex128)
     is_zero = True
     for ib in range(basis_size):
         start, end = basis_ptrs[ib:ib + 2]
         ip = _spv_dot_fast(basis_indices[start:end], basis_coeffs[start:end],
                            new_indices, new_coeffs)
-        pidag_q[ib] = ip
-        is_zero &= np.isclose(ip.real, 0.) and np.isclose(ip.imag, 0.)
+        orthogonal = np.isclose(ip.real, 0.) and np.isclose(ip.imag, 0.)
+        if not orthogonal:
+            pidag_q[ib] = ip
+            is_zero = False
 
     if is_zero:
         # Q is orthogonal to all basis vectors
@@ -48,17 +50,16 @@ def _linear_independence(
 
         return True, pidag_q
 
+    avec = xinv @ pidag_q
+
     # Residual calculation: uniquify the concatenation of Q and columns of -Pi*ai
     concat_size = new_indices.shape[0]
     nonzero_idx = []
-    avals = []
     for ib in range(basis_size):
         # a = X^{-1}Π†Q
-        # aval = xinv[ib * basis_size:(ib + 1) * basis_size] @ pidag_q
-        aval = xinv[ib] @ pidag_q
+        aval = avec[ib]
         if not (np.isclose(aval.real, 0.) and np.isclose(aval.imag, 0.)):
             nonzero_idx.append(ib)
-            avals.append(aval)
             concat_size += basis_ptrs[ib + 1] - basis_ptrs[ib]
 
     concat_indices = np.empty(concat_size, dtype=basis_indices.dtype)
@@ -66,11 +67,11 @@ def _linear_independence(
     concat_indices[:new_indices.shape[0]] = new_indices
     concat_coeffs[:new_coeffs.shape[0]] = new_coeffs
     current_pos = new_indices.shape[0]
-    for ib, aval in zip(nonzero_idx, avals):
+    for ib in nonzero_idx:
         start, end = basis_ptrs[ib:ib + 2]
         next_pos = current_pos + end - start
         concat_indices[current_pos:next_pos] = basis_indices[start:end]
-        concat_coeffs[current_pos:next_pos] = -aval * basis_coeffs[start:end]
+        concat_coeffs[current_pos:next_pos] = -avec[ib] * basis_coeffs[start:end]
         current_pos = next_pos
 
     indices, _ = _uniquify_fast(concat_indices, concat_coeffs, False)
@@ -118,8 +119,9 @@ def linear_independence(
                     basis.indices[col_start:col_end],
                     basis.coeffs[col_start:col_end]
                 )
-                xmat[row, col] = ip
-                xmat[col, row] = ip.conjugate()
+                if not np.isclose(ip, 0.):
+                    xmat[row, col] = ip
+                    xmat[col, row] = ip.conjugate()
 
         xinv = np.ascontiguousarray(np.linalg.inv(xmat))
 
