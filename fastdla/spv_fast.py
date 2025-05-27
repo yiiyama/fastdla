@@ -1,8 +1,30 @@
 """Numba-compiled versions of SparsePauliVector operations."""
+import logging
 import numpy as np
 from numba import njit
 from .pauli import PAULI_MULT_COEFF, PAULI_MULT_INDEX
 from .sparse_pauli_vector import SparsePauliVector
+
+LOG = logging.getLogger(__name__)
+
+
+@njit(nogil=True, inline='always')
+def complex_isclose(lhs, rhs, rtol=1.e-5, atol=1.e-8, equal_nan=False):
+    return (np.isclose(lhs.real, rhs.real, rtol=rtol, atol=atol, equal_nan=equal_nan)
+            and np.isclose(lhs.imag, rhs.imag, rtol=rtol, atol=atol, equal_nan=equal_nan))
+
+
+@njit(nogil=True, inline='always')
+def abs_square(value):
+    return np.square(value.real) + np.square(value.imag)
+
+
+@njit(nogil=True, inline='always')
+def _check_finite(coeff, atol_real, atol_imag, iout, normsq):
+    atol = max(atol_real, atol_imag) * 1.e-5
+    if complex_isclose(coeff, 0., atol=atol):
+        return iout, normsq
+    return iout + 1, normsq + abs_square(coeff)
 
 
 @njit(nogil=True)
@@ -22,26 +44,24 @@ def _uniquify_fast(
 
     normsq = 0.
     iout = 0
+    atol_real = abs(coeffs_unique[0].real)
+    atol_imag = abs(coeffs_unique[0].imag)
     for index, coeff in zip(indices_sorted[1:], coeffs_sorted[1:]):
         if index == indices_unique[iout]:
             coeffs_unique[iout] += coeff
+            atol_real += abs(coeff.real)
+            atol_imag += abs(coeff.imag)
         else:
-            out_real = coeffs_unique[iout].real
-            out_imag = coeffs_unique[iout].imag
-            if not (np.isclose(out_real, 0.) and np.isclose(out_imag, 0.)):
-                normsq += np.square(out_real) + np.square(out_imag)
-                iout += 1
+            iout, normsq = _check_finite(coeffs_unique[iout], atol_real, atol_imag, iout, normsq)
             indices_unique[iout] = index
             coeffs_unique[iout] = coeff
+            atol_real = abs(coeff.real)
+            atol_imag = abs(coeff.imag)
 
-    out_real = coeffs_unique[iout].real
-    out_imag = coeffs_unique[iout].imag
-    if not (np.isclose(out_real, 0.) and np.isclose(out_imag, 0.)):
-        normsq += np.square(out_real) + np.square(out_imag)
-        iout += 1
+    iout, normsq = _check_finite(coeffs_unique[iout], atol_real, atol_imag, iout, normsq)
 
-    if normalize and not np.isclose(normsq, 0.):
-        coeffs_unique /= np.sqrt(normsq)
+    if normalize and iout > 0:
+        coeffs_unique[:iout] /= np.sqrt(normsq)
 
     return indices_unique[:iout], coeffs_unique[:iout]
 
@@ -54,53 +74,11 @@ def _spv_add_fast(
     coeffs2: np.ndarray,
     normalize: bool
 ) -> tuple[np.ndarray, np.ndarray]:
-    i1 = 0
-    i2 = 0
-    iout = 0
-    indices = np.empty(indices1.shape[0] + indices2.shape[0], dtype=indices1.dtype)
-    coeffs = np.empty(indices1.shape[0] + indices2.shape[0], dtype=coeffs1.dtype)
-    normsq = 0.
-    while i1 < indices1.shape[0] and i2 < indices2.shape[0]:
-        if indices1[i1] == indices2[i2]:
-            index = indices1[i1]
-            coeff = coeffs1[i1] + coeffs2[i2]
-            i1 += 1
-            i2 += 1
-            if not (np.isclose(coeff.real, 0.) and np.isclose(coeff.imag, 0.)):
-                indices[iout] = index
-                coeffs[iout] = coeff
-                normsq += np.square(coeff.real) + np.square(coeff.imag)
-                iout += 1
-        elif indices1[i1] > indices2[i2]:
-            indices[iout] = indices2[i2]
-            coeffs[iout] = coeffs2[i2]
-            normsq += np.square(coeffs2[i2].real) + np.square(coeffs2[i2].imag)
-            i2 += 1
-            iout += 1
-        else:
-            indices[iout] = indices1[i1]
-            coeffs[iout] = coeffs1[i1]
-            normsq += np.square(coeffs1[i1].real) + np.square(coeffs1[i1].imag)
-            i1 += 1
-            iout += 1
-
-    r1 = indices1.shape[0] - i1
-    r2 = indices2.shape[0] - i2
-    if r1 > 0:
-        indices[iout:iout + r1] = indices1[i1:]
-        coeffs[iout:iout + r1] = coeffs1[i1:]
-        normsq += np.sum(np.square(coeffs1[i1:].real) + np.square(coeffs1[i1:].imag))
-        iout += r1
-    elif r2 > 0:
-        indices[iout:iout + r2] = indices2[i2:]
-        coeffs[iout:iout + r2] = coeffs2[i2:]
-        normsq += np.sum(np.square(coeffs2[i2:].real) + np.square(coeffs2[i2:].imag))
-        iout += r2
-
-    if normalize:
-        coeffs /= np.sqrt(normsq)
-
-    return indices[:iout], coeffs[:iout]
+    return _uniquify_fast(
+        np.concatenate((indices1, indices2)),
+        np.concatenate((coeffs1, coeffs2)),
+        normalize
+    )
 
 
 def spv_add_fast(
@@ -216,9 +194,14 @@ def _spv_dot_fast(
     i1 = 0
     i2 = 0
     result = 0.+0.j
+    atol_real = 0.
+    atol_imag = 0.
     while i1 < indices1.shape[0] and i2 < indices2.shape[0]:
         if indices1[i1] == indices2[i2]:
-            result += np.conjugate(coeffs1[i1]) * coeffs2[i2]
+            prod = np.conjugate(coeffs1[i1]) * coeffs2[i2]
+            result += prod
+            atol_real += abs(prod.real)
+            atol_imag += abs(prod.imag)
             i1 += 1
             i2 += 1
         elif indices1[i1] > indices2[i2]:
@@ -226,6 +209,11 @@ def _spv_dot_fast(
         else:
             i1 += 1
 
+    atol = max(atol_real, atol_imag) * 1.e-5
+    if complex_isclose(result, 0., atol=atol):
+        return 0.+0.j
+    if complex_isclose(result, 0., atol=1.e-5):
+        LOG.debug('close ip %s %s %s %s', indices1, coeffs1, indices2, coeffs2)
     return result
 
 
