@@ -140,17 +140,35 @@ def _orthogonalize(
     """Compute the component of a vector with respect to an orthonormal basis."""
     # Strategy: Calculate v - sum_j (v.b_j)b_j through uniquify()
     basis_size = len(basis_ptrs) - 1
-    concat_coeffs = np.zeros(basis_ptrs[-1] + new_coeffs.shape[0], dtype=basis_coeffs.dtype)
-
+    concat_size = new_indices.shape[0]
+    nonzero_idx = []
+    ips = []
     for ib in range(basis_size):
         start, end = basis_ptrs[ib:ib + 2]
         ip = _spv_dot_fast(basis_indices[start:end], basis_coeffs[start:end],
                            new_indices, new_coeffs)
         if not (np.isclose(ip.real, 0.) and np.isclose(ip.imag, 0.)):
-            concat_coeffs[start:end] = -ip * basis_coeffs[start:end]
+            nonzero_idx.append(ib)
+            ips.append(ip)
+            concat_size += basis_ptrs[ib + 1] - basis_ptrs[ib]
 
-    concat_coeffs[basis_ptrs[-1]:] = new_coeffs
-    concat_indices = np.concatenate((basis_indices[:basis_ptrs[-1]], new_indices))
+    if log_level <= logging.DEBUG:
+        support_dim = len(nonzero_idx)
+        with objmode():
+            LOG.debug('Vector has %d-dim support in the basis', support_dim)
+
+    concat_indices = np.empty(concat_size, dtype=basis_indices.dtype)
+    concat_coeffs = np.empty(concat_size, dtype=basis_coeffs.dtype)
+    concat_indices[:new_indices.shape[0]] = new_indices
+    concat_coeffs[:new_coeffs.shape[0]] = new_coeffs
+    current_pos = new_indices.shape[0]
+    for ib, ip in zip(nonzero_idx, ips):
+        start, end = basis_ptrs[ib:ib + 2]
+        next_pos = current_pos + end - start
+        concat_indices[current_pos:next_pos] = basis_indices[start:end]
+        concat_coeffs[current_pos:next_pos] = -ip * basis_coeffs[start:end]
+        current_pos = next_pos
+
     return _uniquify_fast(concat_indices, concat_coeffs, False)
 
 
@@ -180,6 +198,9 @@ def _update_basis(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, log_
             basis_coeffs,
             np.empty(additional_capacity, dtype=basis_coeffs.dtype)
         ))
+        if log_level <= logging.DEBUG:
+            with objmode():
+                LOG.debug('Expanded the basis array by %d', additional_capacity)
 
     basis_ptrs.append(next_ptr)
     basis_indices[basis_ptrs[-2]:basis_ptrs[-1]] = indices
@@ -203,7 +224,17 @@ def _if_independent_update(
     is_independent, new_xcol = _linear_independence(indices, coeffs, basis_indices, basis_coeffs,
                                                     basis_ptrs, xinv, log_level)
     if not is_independent:
+        if log_level <= logging.DEBUG:
+            basis_size = len(basis_ptrs) - 1
+            with objmode():
+                LOG.debug('New op is dependent; not updating basis (size %d)', basis_size)
+
         return basis_indices, basis_coeffs, (xmat, xinv)
+
+    if log_level <= logging.DEBUG:
+        basis_size = len(basis_ptrs) - 1
+        with objmode():
+            LOG.debug('Found a linearly independent op, updating basis (size %d)', basis_size)
 
     basis_indices, basis_coeffs = _update_basis(indices, coeffs, basis_indices, basis_coeffs,
                                                 basis_ptrs, log_level)
@@ -214,6 +245,10 @@ def _if_independent_update(
         new_xmat = np.eye(xmat.shape[0] + BASIS_ALLOC_UNIT, dtype=xmat.dtype)
         new_xmat[:xmat.shape[0], :xmat.shape[0]] = xmat
         xmat = new_xmat
+        if log_level <= logging.DEBUG:
+            with objmode():
+                LOG.debug('Expanded the X matrix')
+
     xmat[:basis_size - 1, basis_size - 1] = new_xcol
     xmat[basis_size - 1, :basis_size - 1] = new_xcol.conjugate()
     xinv = np.ascontiguousarray(np.linalg.inv(xmat[:basis_size, :basis_size]))
@@ -226,7 +261,18 @@ def _if_orthogonal_update(indices, coeffs, basis_indices, basis_coeffs, basis_pt
     o_indices, o_coeffs = _orthogonalize(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs,
                                          log_level)
     if o_indices.shape[0] == 0:
+        if log_level <= logging.DEBUG:
+            basis_size = len(basis_ptrs) - 1
+            with objmode():
+                LOG.debug('New op has no orthogonal component; not updating basis (size %d)',
+                          basis_size)
+
         return basis_indices, basis_coeffs, ()
+
+    if log_level <= logging.DEBUG:
+        basis_size = len(basis_ptrs) - 1
+        with objmode():
+            LOG.debug('Found an op with orthogonal component, updating basis (size %d)', basis_size)
 
     o_coeffs /= np.sqrt(np.sum(np.square(np.abs(o_coeffs))))
     basis_indices, basis_coeffs = _update_basis(o_indices, o_coeffs, basis_indices, basis_coeffs,
@@ -254,11 +300,11 @@ def _update_loop(
 
     num_results = len(result_indices)
     for ires in range(num_results):
-        # if log_level <= logging.INFO and ires % 500 == 0:
-        #     la_dim = len(basis_ptrs) - 1
-        #     with objmode():
-        #         LOG.info('Processing commutator %d/%d (Lie algebra dim %d)..',
-        #                  ires, num_results, la_dim)
+        if log_level <= logging.INFO and ires % 500 == 0:
+            la_dim = len(basis_ptrs) - 1
+            with objmode():
+                LOG.info('Processing commutator %d/%d (Lie algebra dim %d)..',
+                         ires, num_results, la_dim)
 
         indices = result_indices[ires]
         coeffs = result_coeffs[ires]
