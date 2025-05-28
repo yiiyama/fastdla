@@ -100,11 +100,11 @@ def _if_independent_update(
     basis_coeffs: np.ndarray,
     basis_ptrs: list[int],
     log_level: int
-) -> tuple[bool, np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray]:
     o_indices, o_coeffs = _orthogonalize(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs,
                                          False)
     if o_indices.shape[0] == 0:
-        return False, basis_indices, basis_coeffs
+        return basis_indices, basis_coeffs
 
     o_norm = np.sqrt(np.sum(abs_square(o_coeffs)))
     o_coeffs /= o_norm
@@ -118,7 +118,7 @@ def _if_independent_update(
         o_norm = np.sqrt(np.sum(abs_square(o_coeffs)))
         if not np.isclose(o_norm, 1., rtol=1.e-5):
             # We had a false orthogonal vector
-            return False, basis_indices, basis_coeffs
+            return basis_indices, basis_coeffs
 
         o_coeffs /= o_norm
 
@@ -130,7 +130,7 @@ def _if_independent_update(
 
     basis_indices, basis_coeffs = _update_basis(o_indices, o_coeffs, basis_indices, basis_coeffs,
                                                 basis_ptrs, log_level)
-    return True, basis_indices, basis_coeffs
+    return basis_indices, basis_coeffs
 
 
 @njit
@@ -172,13 +172,14 @@ def _update_loop(
         isource = result_isource[ires]
 
         # Check linear independence and update the basis_* arrays
-        updated, basis_indices, basis_coeffs = _if_independent_update(
+        current_size = len(basis_ptrs) - 1
+        basis_indices, basis_coeffs = _if_independent_update(
             indices, coeffs, isource, basis_indices, basis_coeffs, basis_ptrs, log_level
         )
-        if updated:
+        new_size = len(basis_ptrs) - 1
+        if new_size != current_size:
             independent_elements.append(ires)
-
-        if len(basis_ptrs) - 1 == max_dim:
+        if new_size == max_dim:
             break
 
     return basis_indices, basis_coeffs, independent_elements
@@ -204,6 +205,8 @@ def lie_closure(
 
     Args:
         generators: Lie algebra elements to compute the closure from.
+        keep_original: Whether to keep the original (normalized) generator elements. If False, only
+            orthonormalized Lie algebra elements are kept in memory to speed up the calculation.
         max_dim: Cutoff for the dimension of the Lie closure. If set, the algorithm may be halted
             before a full closure is obtained.
         min_tasks: Minimum number of commutator calculations to complete before starting a new batch
@@ -215,6 +218,8 @@ def lie_closure(
         keep_original=True, otherwise only the orthonormal basis.
     """
     if len(generators) == 0:
+        if keep_original:
+            return generators, generators
         return generators
 
     max_dim = max_dim or 4 ** generators.num_qubits - 1
@@ -231,15 +236,18 @@ def lie_closure(
     for iop in range(1, len(generators)):
         op = generators[iop]
         op = op.normalize()
-        updated, basis.indices, basis.coeffs = _if_independent_update(
+        current_size = len(basis)
+        basis.indices, basis.coeffs = _if_independent_update(
             op.indices, op.coeffs, (iop, -1), basis.indices, basis.coeffs, basis.ptrs,
             LOG.getEffectiveLevel()
         )
-        if updated and keep_original:
+        if keep_original and len(basis) != current_size:
             nested_commutators.append(op)
 
     if len(basis) >= max_dim:
-        return basis
+        if keep_original:
+            return nested_commutators[:max_dim], basis[:max_dim]
+        return basis[:max_dim]
 
     if max_workers is not None:
         max_workers = min(max_workers, cpu_count())
