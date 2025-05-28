@@ -43,15 +43,17 @@ def lie_closure(
     Lie closure generation follows the standard algorithm of e.g. Algorithm 1 in Wiersema et al. npj
     quant. info. 10 (1):
 
-    Input: Set of generators A
-    for a_i in A do
-        for a_j in A do
-            a_k = [a_i, a_j] / |[a_i, a_j]|
-            if a_k not in span(A) then
-                A <- A U {a_k}
-            endif
+    .. code-block::
+
+        Input: Set of generators A
+        for a_i in A do
+            for a_j in A do
+                a_k = [a_i, a_j] / |[a_i, a_j]|
+                if a_k not in span(A) then
+                    A <- A U {a_k}
+                endif
+            end
         end
-    end
 
     Specific implementations employ different optimization strategies in the loop.
 
