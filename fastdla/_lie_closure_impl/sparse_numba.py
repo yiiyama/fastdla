@@ -1,133 +1,18 @@
 """Implementation of the Lie closure generator using SparsePauliVectors."""
-from collections.abc import Callable
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import logging
-from typing import Any, Optional
+from typing import Optional
 import time
 from multiprocessing import cpu_count
 import numpy as np
 from numba import njit, objmode
 from fastdla.sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
-from fastdla.spv_fast import _uniquify_fast, _spv_commutator_fast, _spv_dot_fast
+from fastdla.spv_fast import (abs_square, complex_isclose, _uniquify_fast, _spv_commutator_fast,
+                              _spv_dot_fast)
 
 LOG = logging.getLogger(__name__)
 BASIS_ALLOC_UNIT = 1024
 MEM_ALLOC_UNIT = SparsePauliVectorArray.MEM_ALLOC_UNIT
-
-
-@njit
-def _linear_independence(
-    new_indices: np.ndarray,
-    new_coeffs: np.ndarray,
-    basis_indices: np.ndarray,
-    basis_coeffs: np.ndarray,
-    basis_ptrs: list[int],
-    xinv: np.ndarray,
-    log_level: int
-) -> tuple[bool, np.ndarray]:
-    """Check linear independence of a new Pauli vector."""
-    basis_size = len(basis_ptrs) - 1
-    # Create and fill the Π†Q vector
-    pidag_q = np.zeros(basis_size, dtype=np.complex128)
-    is_zero = True
-    for ib in range(basis_size):
-        start, end = basis_ptrs[ib:ib + 2]
-        ip = _spv_dot_fast(basis_indices[start:end], basis_coeffs[start:end],
-                           new_indices, new_coeffs)
-        orthogonal = np.isclose(ip.real, 0.) and np.isclose(ip.imag, 0.)
-        if not orthogonal:
-            pidag_q[ib] = ip
-            is_zero = False
-
-    if is_zero:
-        # Q is orthogonal to all basis vectors
-        if log_level <= logging.DEBUG:
-            with objmode():
-                pauli_sum = []
-                for t in zip(new_indices, new_coeffs):
-                    pauli_sum.append(str(t))
-                LOG.debug('%s is orthogonal to all basis vectors', ','.join(pauli_sum))
-
-        return True, pidag_q
-
-    avec = xinv @ pidag_q
-
-    # Residual calculation: uniquify the concatenation of Q and columns of -Pi*ai
-    concat_size = new_indices.shape[0]
-    nonzero_idx = []
-    for ib in range(basis_size):
-        # a = X^{-1}Π†Q
-        aval = avec[ib]
-        if not (np.isclose(aval.real, 0.) and np.isclose(aval.imag, 0.)):
-            nonzero_idx.append(ib)
-            concat_size += basis_ptrs[ib + 1] - basis_ptrs[ib]
-
-    concat_indices = np.empty(concat_size, dtype=basis_indices.dtype)
-    concat_coeffs = np.empty(concat_size, dtype=basis_coeffs.dtype)
-    concat_indices[:new_indices.shape[0]] = new_indices
-    concat_coeffs[:new_coeffs.shape[0]] = new_coeffs
-    current_pos = new_indices.shape[0]
-    for ib in nonzero_idx:
-        start, end = basis_ptrs[ib:ib + 2]
-        next_pos = current_pos + end - start
-        concat_indices[current_pos:next_pos] = basis_indices[start:end]
-        concat_coeffs[current_pos:next_pos] = -avec[ib] * basis_coeffs[start:end]
-        current_pos = next_pos
-
-    indices, _ = _uniquify_fast(concat_indices, concat_coeffs, False)
-    is_independent = indices.shape[0] != 0
-
-    if log_level <= logging.DEBUG:
-        num_overlaps = len(nonzero_idx)
-        with objmode():
-            if is_independent:
-                LOG.debug('New op has overlaps with %d basis vectors but is linearly independent',
-                          num_overlaps)
-            else:
-                LOG.debug('New op exists in the span and overlaps with %d basis vectors',
-                          num_overlaps)
-
-    return is_independent, pidag_q
-
-
-def linear_independence(
-    new_op: SparsePauliVector,
-    basis: SparsePauliVectorArray,
-    xinv: Optional[np.ndarray] = None
-) -> bool:
-    """Check if the given operator is linearly independent from all other elements in the basis.
-
-    See the docstring of generator.linear_independence for details of the algorithm.
-
-    Args:
-        new_op: Lie algebra element Q to check the linear independence of.
-        basis: The basis (list of linearly independent elements) of the Lie Algebra.
-        xinv: Inverse of the X matrix.
-
-    Returns:
-        True if Q is linearly independent from all elements of the basis.
-    """
-    if xinv is None:
-        xmat = np.eye((basis_size := len(basis)), dtype=basis.coeffs.dtype)
-        for col in range(1, basis_size):
-            col_start, col_end = basis.ptrs[col:col + 2]
-            for row in range(col):
-                row_start, row_end = basis.ptrs[row:row + 2]
-                ip = _spv_dot_fast(
-                    basis.indices[row_start:row_end],
-                    basis.coeffs[row_start:row_end],
-                    basis.indices[col_start:col_end],
-                    basis.coeffs[col_start:col_end]
-                )
-                if not np.isclose(ip, 0.):
-                    xmat[row, col] = ip
-                    xmat[col, row] = ip.conjugate()
-
-        xinv = np.ascontiguousarray(np.linalg.inv(xmat))
-
-    return _linear_independence(new_op.indices, new_op.coeffs,
-                                basis.indices, basis.coeffs, basis.ptrs,
-                                xinv, LOG.getEffectiveLevel())[0]
 
 
 @njit
@@ -137,6 +22,7 @@ def _orthogonalize(
     basis_indices: np.ndarray,
     basis_coeffs: np.ndarray,
     basis_ptrs: list[int],
+    normalize: bool,
     log_level: int
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute the component of a vector with respect to an orthonormal basis."""
@@ -149,15 +35,16 @@ def _orthogonalize(
         start, end = basis_ptrs[ib:ib + 2]
         ip = _spv_dot_fast(basis_indices[start:end], basis_coeffs[start:end],
                            new_indices, new_coeffs)
-        if not (np.isclose(ip.real, 0.) and np.isclose(ip.imag, 0.)):
+        if ip.real != 0. or ip.imag != 0.:
             nonzero_idx.append(ib)
             ips.append(ip)
             concat_size += basis_ptrs[ib + 1] - basis_ptrs[ib]
 
-    if log_level <= logging.DEBUG:
-        support_dim = len(nonzero_idx)
-        with objmode():
-            LOG.debug('Vector has %d-dim support in the basis', support_dim)
+    LOG.debug(ips)
+    # if log_level <= logging.DEBUG:
+    #     support_dim = len(nonzero_idx)
+    #     with objmode():
+    #         LOG.debug('Vector has %d-dim support in the basis', support_dim)
 
     concat_indices = np.empty(concat_size, dtype=basis_indices.dtype)
     concat_coeffs = np.empty(concat_size, dtype=basis_coeffs.dtype)
@@ -176,12 +63,12 @@ def _orthogonalize(
 
 def orthogonalize(
     new_op: SparsePauliVector,
-    basis: SparsePauliVectorArray
+    basis: SparsePauliVectorArray,
+    normalize: bool = True
 ) -> SparsePauliVector:
     """Subtract the subspace projection of an algebra element from itself."""
-    indices, coeffs = _orthogonalize(new_op.indices, new_op.coeffs,
-                                     basis.indices, basis.coeffs, basis.ptrs,
-                                     LOG.getEffectiveLevel())
+    indices, coeffs = _orthogonalize(new_op.indices, new_op.coeffs, basis.indices, basis.coeffs,
+                                     basis.ptrs, normalize, LOG.getEffectiveLevel())
     return SparsePauliVector(indices, coeffs, num_qubits=new_op.num_qubits, no_check=True)
 
 
@@ -215,86 +102,54 @@ def _update_basis(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, log_
 def _if_independent_update(
     indices: np.ndarray,
     coeffs: np.ndarray,
+    isource: tuple[int, int],
     basis_indices: np.ndarray,
     basis_coeffs: np.ndarray,
-    basis_ptrs: np.ndarray,
-    aux: tuple[np.ndarray, np.ndarray],
+    basis_ptrs: list[int],
     log_level: int
-):
-    """Update the basis if (indices, coeffs) represent an independent operator."""
-    xmat, xinv = aux
-    is_independent, new_xcol = _linear_independence(indices, coeffs, basis_indices, basis_coeffs,
-                                                    basis_ptrs, xinv, log_level)
-    if not is_independent:
-        if log_level <= logging.DEBUG:
-            basis_size = len(basis_ptrs) - 1
-            with objmode():
-                LOG.debug('New op is dependent; not updating basis (size %d)', basis_size)
-
-        return basis_indices, basis_coeffs, (xmat, xinv)
-
-    if log_level <= logging.DEBUG:
-        basis_size = len(basis_ptrs) - 1
-        with objmode():
-            LOG.debug('Found a linearly independent op, updating basis (size %d)', basis_size)
-
-    basis_indices, basis_coeffs = _update_basis(indices, coeffs, basis_indices, basis_coeffs,
-                                                basis_ptrs, log_level)
-
-    # Add a column to the X matrix
-    basis_size = len(basis_ptrs) - 1
-    if basis_size > xmat.shape[0]:
-        new_xmat = np.eye(xmat.shape[0] + BASIS_ALLOC_UNIT, dtype=xmat.dtype)
-        new_xmat[:xmat.shape[0], :xmat.shape[0]] = xmat
-        xmat = new_xmat
-        if log_level <= logging.DEBUG:
-            with objmode():
-                LOG.debug('Expanded the X matrix')
-
-    xmat[:basis_size - 1, basis_size - 1] = new_xcol
-    xmat[basis_size - 1, :basis_size - 1] = new_xcol.conjugate()
-    xinv = np.ascontiguousarray(np.linalg.inv(xmat[:basis_size, :basis_size]))
-
-    return basis_indices, basis_coeffs, (xmat, xinv)
-
-
-@njit
-def _if_orthogonal_update(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, _, log_level):
+) -> tuple[bool, np.ndarray, np.ndarray]:
     o_indices, o_coeffs = _orthogonalize(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs,
-                                         log_level)
+                                         False, log_level)
     if o_indices.shape[0] == 0:
-        if log_level <= logging.DEBUG:
-            basis_size = len(basis_ptrs) - 1
-            with objmode():
-                LOG.debug('New op has no orthogonal component; not updating basis (size %d)',
-                          basis_size)
+        # if log_level <= logging.DEBUG:
+        #     basis_size = len(basis_ptrs) - 1
+        #     with objmode():
+        #         LOG.debug('New op has no orthogonal component; not updating basis (size %d)',
+        #                   basis_size)
 
-        return basis_indices, basis_coeffs, ()
+        return False, basis_indices, basis_coeffs
+
+    o_norm = np.sqrt(np.sum(abs_square(o_coeffs)))
+    # if not np.isclose(o_norm, 1., rtol=1.8):
+    #     # Distill the orthogonal component
+    #     o_indices, o_coeffs = _orthogonalize(o_indices, o_coeffs / o_norm, basis_indices,
+    #                                          basis_coeffs, basis_ptrs, False, log_level)
 
     if log_level <= logging.DEBUG:
         basis_size = len(basis_ptrs) - 1
         with objmode():
-            LOG.debug('Found an op with orthogonal component, updating basis (size %d)', basis_size)
+            LOG.debug('Commutator [%d, %d] has an orthogonal component with norm %.3e;'
+                      ' updating basis (size %d)', isource[0], isource[1], o_norm, basis_size)
 
-    o_coeffs /= np.sqrt(np.sum(np.square(np.abs(o_coeffs))))
+    o_coeffs /= o_norm
     basis_indices, basis_coeffs = _update_basis(o_indices, o_coeffs, basis_indices, basis_coeffs,
                                                 basis_ptrs, log_level)
-    return basis_indices, basis_coeffs, ()
+    return True, basis_indices, basis_coeffs
 
 
 @njit
 def _update_loop(
-    updater: Callable,
     result_indices: list[np.ndarray],
     result_coeffs: list[np.ndarray],
+    result_isource: list[tuple[int, int]],
     basis_indices: np.ndarray,
     basis_coeffs: np.ndarray,
     basis_ptrs: list[int],
-    aux: tuple[Any, ...],
     max_dim: int,
     log_level: int
-):
+) -> tuple[np.ndarray, np.ndarray, list[int]]:
     """Loop through the calculated commutators and update the basis with independent elements."""
+    independent_elements = []
     # Commutator results are all non-empty and sorted by the indices array so that identical results
     # can be filtered out before invoking the linear dependence check
     prev_indices = np.array([-1], dtype=np.uint64)
@@ -304,9 +159,10 @@ def _update_loop(
     for ires in range(num_results):
         if log_level <= logging.INFO and ires % 500 == 0:
             la_dim = len(basis_ptrs) - 1
+            ilhs, irhs = result_isource[ires]
             with objmode():
-                LOG.info('Processing commutator %d/%d (Lie algebra dim %d)..',
-                         ires, num_results, la_dim)
+                LOG.info('Processing commutator [%d, %d] (%d/%d). Lie algebra dim %d',
+                         ilhs, irhs, ires, num_results, la_dim)
 
         indices = result_indices[ires]
         coeffs = result_coeffs[ires]
@@ -317,16 +173,27 @@ def _update_loop(
 
         prev_indices = indices
         prev_coeffs_conj = coeffs.conjugate()
+        isource = result_isource[ires]
 
         # Check linear independence and update the basis_* arrays
-        basis_indices, basis_coeffs, aux = updater(
-            indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, aux, log_level
+        updated, basis_indices, basis_coeffs = _if_independent_update(
+            indices, coeffs, isource, basis_indices, basis_coeffs, basis_ptrs, log_level
         )
+        if updated:
+            independent_elements.append(ires)
 
         if len(basis_ptrs) - 1 == max_dim:
             break
 
-    return basis_indices, basis_coeffs, aux
+    return basis_indices, basis_coeffs, independent_elements
+
+
+@njit(nogil=True)
+def _commutator(ilhs, lhs_indices, lhs_coeffs, irhs, rhs_indices, rhs_coeffs, num_qubits):
+    """Calculate the commutator and return the results together with the row and column numbers."""
+    indices, coeffs = _spv_commutator_fast(lhs_indices, lhs_coeffs, rhs_indices, rhs_coeffs,
+                                           num_qubits, True)
+    return indices, coeffs, ilhs, irhs
 
 
 def lie_closure(
@@ -348,7 +215,8 @@ def lie_closure(
         max_workers: Maximun number of threads to use to parallelize the commutator calculations.
 
     Returns:
-        A basis of the Lie closure.
+        A list of linearly independent nested commutators and the orthonormal basis if
+        keep_original=True, otherwise only the orthonormal basis.
     """
     if len(generators) == 0:
         return generators
@@ -359,22 +227,20 @@ def lie_closure(
     basis = SparsePauliVectorArray([generators[0].normalize()])
 
     if keep_original:
-        # Allocate a large matrix to embed X in
-        xmat_size = ((len(basis) - 1) // BASIS_ALLOC_UNIT + 1) * BASIS_ALLOC_UNIT
-        xmat = np.eye(xmat_size, dtype=np.complex128)
-        xinv = xmat
-        updater = _if_independent_update
-        aux = (xmat, xinv)
+        nested_commutators = SparsePauliVectorArray([basis[0]])
+        source = nested_commutators
     else:
-        updater = _if_orthogonal_update
-        aux = ()
+        source = basis
 
-    for op in generators[1:]:
-        op_coeffs = op.coeffs / np.sqrt(np.sum(np.square(np.abs(op.coeffs))))
-        basis.indices, basis.coeffs, aux = updater(
-            op.indices, op_coeffs, basis.indices, basis.coeffs, basis.ptrs, aux,
+    for iop in range(1, len(generators)):
+        op = generators[iop]
+        op = op.normalize()
+        updated, basis.indices, basis.coeffs = _if_independent_update(
+            op.indices, op.coeffs, (iop, -1), basis.indices, basis.coeffs, basis.ptrs,
             LOG.getEffectiveLevel()
         )
+        if updated and keep_original:
+            nested_commutators.append(op)
 
     if len(basis) >= max_dim:
         return basis
@@ -386,18 +252,20 @@ def lie_closure(
         futures = set()
 
         def calculate_commutators(lhs_first):
-            for ib1 in range(lhs_first, len(basis)):
-                start, end = basis.ptrs[ib1:ib1 + 2]
-                lhs_indices = np.array(basis.indices[start:end])
-                lhs_coeffs = np.array(basis.coeffs[start:end])
+            for ib1 in range(lhs_first, len(source)):
+                start, end = source.ptrs[ib1:ib1 + 2]
+                lhs_indices = np.array(source.indices[start:end])
+                lhs_coeffs = np.array(source.coeffs[start:end])
                 for ib2 in range(ib1):
-                    start, end = basis.ptrs[ib2:ib2 + 2]
-                    rhs_indices = np.array(basis.indices[start:end])
-                    rhs_coeffs = np.array(basis.coeffs[start:end])
+                    start, end = source.ptrs[ib2:ib2 + 2]
+                    rhs_indices = np.array(source.indices[start:end])
+                    rhs_coeffs = np.array(source.coeffs[start:end])
                     futures.add(
                         executor.submit(
-                            _spv_commutator_fast,
-                            lhs_indices, lhs_coeffs, rhs_indices, rhs_coeffs, basis.num_qubits, True
+                            _commutator,
+                            ib1, lhs_indices, lhs_coeffs,
+                            ib2, rhs_indices, rhs_coeffs,
+                            basis.num_qubits
                         )
                     )
 
@@ -429,21 +297,29 @@ def lie_closure(
             sort_idx = sorted(range(len(results)), key=indices_tuples.__getitem__)
             result_indices = [results[idx][0] for idx in sort_idx]
             result_coeffs = [results[idx][1] for idx in sort_idx]
+            result_isource = [results[idx][2:] for idx in sort_idx]
             LOG.debug('Sorted in %.2fs', time.time() - sort_start)
 
             main_loop_start = time.time()
             old_dim = len(basis)
-            if updater is _if_independent_update:
-                xinv = np.ascontiguousarray(np.linalg.inv(xmat[:old_dim, :old_dim]))
-                aux = (xmat, xinv)
-
-            basis.indices, basis.coeffs, aux = _update_loop(
-                updater, result_indices, result_coeffs, basis.indices, basis.coeffs, basis.ptrs,
-                aux, max_dim, LOG.getEffectiveLevel()
+            basis.indices, basis.coeffs, independent_elements = _update_loop(
+                result_indices, result_coeffs, result_isource, basis.indices, basis.coeffs,
+                basis.ptrs, max_dim, LOG.getEffectiveLevel()
             )
             new_dim = len(basis)
-            LOG.debug('Found %d new ops in %.2fs',
-                      new_dim - old_dim, time.time() - main_loop_start)
+            if keep_original:
+                for ires in independent_elements:
+                    nested_commutators.append(
+                        SparsePauliVector(result_indices[ires], result_coeffs[ires],
+                                          num_qubits=basis.num_qubits)
+                    )
+            if LOG.getEffectiveLevel() <= logging.DEBUG:
+                LOG.debug('Found %d new ops in %.2fs',
+                          new_dim - old_dim, time.time() - main_loop_start)
+                comms = [f'[{result_isource[ires][0]}, {result_isource[ires][1]}]'
+                         for ires in independent_elements]
+                LOG.debug(', '.join(f'{comm}->{new}'
+                                    for comm, new in zip(comms, range(old_dim, new_dim))))
 
             if new_dim == max_dim:
                 executor.shutdown(wait=False, cancel_futures=True)
@@ -458,4 +334,6 @@ def lie_closure(
                 LOG.info('Current Lie algebra dimension: %d', new_dim)
             LOG.debug('Outer loop took %.2fs', time.time() - outer_loop_start)
 
+    if keep_original:
+        return nested_commutators, basis
     return basis
