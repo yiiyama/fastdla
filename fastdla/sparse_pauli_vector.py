@@ -256,7 +256,7 @@ class SparsePauliVectorArray:
 
     def __getitem__(self, idx: int | slice) -> SparsePauliVector:
         if isinstance(idx, slice):
-            return [self[i] for i in range(*idx.indices(len(self)))]
+            return SparsePauliVectorArray([self[i] for i in range(*idx.indices(len(self)))])
         if idx < 0:
             idx += len(self)
         if idx < 0 or idx >= len(self):
