@@ -7,8 +7,7 @@ from multiprocessing import cpu_count
 import numpy as np
 from numba import njit, objmode
 from fastdla.sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
-from fastdla.spv_fast import (abs_square, complex_isclose, _uniquify_fast, _spv_commutator_fast,
-                              _spv_dot_fast)
+from fastdla.spv_fast import abs_square, _uniquify_fast, _spv_commutator_fast, _spv_dot_fast
 
 LOG = logging.getLogger(__name__)
 BASIS_ALLOC_UNIT = 1024
@@ -22,8 +21,7 @@ def _orthogonalize(
     basis_indices: np.ndarray,
     basis_coeffs: np.ndarray,
     basis_ptrs: list[int],
-    normalize: bool,
-    log_level: int
+    normalize: bool
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute the component of a vector with respect to an orthonormal basis."""
     # Strategy: Calculate v - sum_j (v.b_j)b_j through uniquify()
@@ -35,16 +33,11 @@ def _orthogonalize(
         start, end = basis_ptrs[ib:ib + 2]
         ip = _spv_dot_fast(basis_indices[start:end], basis_coeffs[start:end],
                            new_indices, new_coeffs)
-        if ip.real != 0. or ip.imag != 0.:
+        # Checking exact equality with zero because _spv_dot_fast rounds off close-to-zero ips
+        if not (ip.real == 0. and ip.imag == 0.):
             nonzero_idx.append(ib)
             ips.append(ip)
             concat_size += basis_ptrs[ib + 1] - basis_ptrs[ib]
-
-    LOG.debug(ips)
-    # if log_level <= logging.DEBUG:
-    #     support_dim = len(nonzero_idx)
-    #     with objmode():
-    #         LOG.debug('Vector has %d-dim support in the basis', support_dim)
 
     concat_indices = np.empty(concat_size, dtype=basis_indices.dtype)
     concat_coeffs = np.empty(concat_size, dtype=basis_coeffs.dtype)
@@ -58,7 +51,7 @@ def _orthogonalize(
         concat_coeffs[current_pos:next_pos] = -ip * basis_coeffs[start:end]
         current_pos = next_pos
 
-    return _uniquify_fast(concat_indices, concat_coeffs, False)
+    return _uniquify_fast(concat_indices, concat_coeffs, normalize)
 
 
 def orthogonalize(
@@ -68,7 +61,7 @@ def orthogonalize(
 ) -> SparsePauliVector:
     """Subtract the subspace projection of an algebra element from itself."""
     indices, coeffs = _orthogonalize(new_op.indices, new_op.coeffs, basis.indices, basis.coeffs,
-                                     basis.ptrs, normalize, LOG.getEffectiveLevel())
+                                     basis.ptrs, normalize)
     return SparsePauliVector(indices, coeffs, num_qubits=new_op.num_qubits, no_check=True)
 
 
@@ -109,29 +102,32 @@ def _if_independent_update(
     log_level: int
 ) -> tuple[bool, np.ndarray, np.ndarray]:
     o_indices, o_coeffs = _orthogonalize(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs,
-                                         False, log_level)
+                                         False)
     if o_indices.shape[0] == 0:
-        # if log_level <= logging.DEBUG:
-        #     basis_size = len(basis_ptrs) - 1
-        #     with objmode():
-        #         LOG.debug('New op has no orthogonal component; not updating basis (size %d)',
-        #                   basis_size)
-
         return False, basis_indices, basis_coeffs
 
     o_norm = np.sqrt(np.sum(abs_square(o_coeffs)))
-    # if not np.isclose(o_norm, 1., rtol=1.8):
-    #     # Distill the orthogonal component
-    #     o_indices, o_coeffs = _orthogonalize(o_indices, o_coeffs / o_norm, basis_indices,
-    #                                          basis_coeffs, basis_ptrs, False, log_level)
+    o_coeffs /= o_norm
+    # A single pass can result in a false orthogonal vector due to finite numerical precision
+    # If the extracted vector is truly orthogonal, renormalizing it and further extracting the
+    # orthogonal component should result in almost-unit-norm vector.
+    if not np.isclose(o_norm, 1., rtol=1.e-5):
+        # Distill the orthogonal component
+        o_indices, o_coeffs = _orthogonalize(o_indices, o_coeffs, basis_indices, basis_coeffs,
+                                             basis_ptrs, False)
+        o_norm = np.sqrt(np.sum(abs_square(o_coeffs)))
+        if not np.isclose(o_norm, 1., rtol=1.e-5):
+            # We had a false orthogonal vector
+            return False, basis_indices, basis_coeffs
+
+        o_coeffs /= o_norm
 
     if log_level <= logging.DEBUG:
-        basis_size = len(basis_ptrs) - 1
+        new_size = len(basis_ptrs)
         with objmode():
-            LOG.debug('Commutator [%d, %d] has an orthogonal component with norm %.3e;'
-                      ' updating basis (size %d)', isource[0], isource[1], o_norm, basis_size)
+            LOG.debug('Updating basis with commutator [%d, %d] (new size %d)',
+                      isource[0], isource[1], new_size)
 
-    o_coeffs /= o_norm
     basis_indices, basis_coeffs = _update_basis(o_indices, o_coeffs, basis_indices, basis_coeffs,
                                                 basis_ptrs, log_level)
     return True, basis_indices, basis_coeffs
@@ -281,7 +277,7 @@ def lie_closure(
                     break
                 time.sleep(1.)
 
-            outer_loop_start = time.time()
+            LOG.info('Current Lie algebra dimension: %d', len(basis))
             LOG.info('Evaluating %d/%d commutators for independence', len(done), len(futures))
 
             # Pop completed futures out
@@ -298,7 +294,7 @@ def lie_closure(
             result_indices = [results[idx][0] for idx in sort_idx]
             result_coeffs = [results[idx][1] for idx in sort_idx]
             result_isource = [results[idx][2:] for idx in sort_idx]
-            LOG.debug('Sorted in %.2fs', time.time() - sort_start)
+            LOG.debug('Sorted %d results in %.2fs', len(results), time.time() - sort_start)
 
             main_loop_start = time.time()
             old_dim = len(basis)
@@ -316,23 +312,17 @@ def lie_closure(
             if LOG.getEffectiveLevel() <= logging.DEBUG:
                 LOG.debug('Found %d new ops in %.2fs',
                           new_dim - old_dim, time.time() - main_loop_start)
-                comms = [f'[{result_isource[ires][0]}, {result_isource[ires][1]}]'
-                         for ires in independent_elements]
-                LOG.debug(', '.join(f'{comm}->{new}'
-                                    for comm, new in zip(comms, range(old_dim, new_dim))))
 
             if new_dim == max_dim:
                 executor.shutdown(wait=False, cancel_futures=True)
                 break
 
-            # Calculate the commutators between the new basis elements and all others
-            calculate_commutators(old_dim)
+            if new_dim > old_dim:
+                # Calculate the commutators between the new basis elements and all others
+                calculate_commutators(old_dim)
 
-            num_added = (new_dim + old_dim - 1) * (new_dim - old_dim) // 2
-            LOG.info('Adding %d commutators; %d more to be evaluated', num_added, len(futures))
-            if LOG.getEffectiveLevel() < logging.ERROR:
-                LOG.info('Current Lie algebra dimension: %d', new_dim)
-            LOG.debug('Outer loop took %.2fs', time.time() - outer_loop_start)
+                num_added = (new_dim + old_dim - 1) * (new_dim - old_dim) // 2
+                LOG.info('Adding %d commutators; %d more to be evaluated', num_added, len(futures))
 
     if keep_original:
         return nested_commutators, basis
