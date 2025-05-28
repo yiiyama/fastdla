@@ -19,13 +19,13 @@ class SparsePauliSum:
             cls.dot = spv_dot
         elif to == 'fast':
             # pylint: disable-next=import-outside-toplevel
-            from fastdla.sps_fast import (spv_add_fast, spv_matmul_fast, spv_commutator_fast,
-                                          spv_dot_fast)
-            cls.__add__ = spv_add_fast
-            cls.__sub__ = lambda self, other: spv_add_fast(self, -other)
-            cls.__matmul__ = spv_matmul_fast
-            cls.commutator = spv_commutator_fast
-            cls.dot = spv_dot_fast
+            from fastdla.sps_fast import (sps_add_fast, sps_matmul_fast, sps_commutator_fast,
+                                          sps_dot_fast)
+            cls.__add__ = sps_add_fast
+            cls.__sub__ = lambda self, other: sps_add_fast(self, -other)
+            cls.__matmul__ = sps_matmul_fast
+            cls.commutator = sps_commutator_fast
+            cls.dot = sps_dot_fast
 
     def __init__(
         self,

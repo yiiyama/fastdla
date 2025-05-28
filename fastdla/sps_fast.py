@@ -72,7 +72,7 @@ def _uniquify_fast(
 
 
 @njit(nogil=True)
-def _spv_add_fast(
+def _sps_add_fast(
     indices1: np.ndarray,
     coeffs1: np.ndarray,
     indices2: np.ndarray,
@@ -86,7 +86,7 @@ def _spv_add_fast(
     )
 
 
-def spv_add_fast(
+def sps_add_fast(
     lhs: SparsePauliSum,
     rhs: SparsePauliSum,
     normalize: bool = False
@@ -96,12 +96,12 @@ def spv_add_fast(
     if lhs.num_terms * lhs.num_terms == 0:
         return SparsePauliSum([], [], lhs.num_qubits, no_check=True)
 
-    indices, coeffs = _spv_add_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs, normalize)
+    indices, coeffs = _sps_add_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs, normalize)
     return SparsePauliSum(indices, coeffs, lhs.num_qubits, no_check=True)
 
 
 @njit(nogil=True)
-def _spv_matmul_fast(
+def _sps_matmul_fast(
     indices1: np.ndarray,
     coeffs1: np.ndarray,
     indices2: np.ndarray,
@@ -126,7 +126,7 @@ def _spv_matmul_fast(
     return _uniquify_fast(indices, coeffs, normalize)
 
 
-def spv_matmul_fast(
+def sps_matmul_fast(
     lhs: SparsePauliSum,
     rhs: SparsePauliSum,
     normalize: bool = False
@@ -136,13 +136,13 @@ def spv_matmul_fast(
     if lhs.num_terms * lhs.num_terms == 0:
         return SparsePauliSum([], [], lhs.num_qubits, no_check=True)
 
-    indices, coeffs = _spv_matmul_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs,
+    indices, coeffs = _sps_matmul_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs,
                                        lhs.num_qubits, normalize)
     return SparsePauliSum(indices, coeffs, lhs.num_qubits, no_check=True)
 
 
 @njit(nogil=True)
-def _spv_commutator_fast(
+def _sps_commutator_fast(
     indices1: np.ndarray,
     coeffs1: np.ndarray,
     indices2: np.ndarray,
@@ -174,7 +174,7 @@ def _spv_commutator_fast(
     return _uniquify_fast(indices, coeffs, normalize)
 
 
-def spv_commutator_fast(
+def sps_commutator_fast(
     lhs: SparsePauliSum,
     rhs: SparsePauliSum,
     normalize: bool = False
@@ -184,13 +184,13 @@ def spv_commutator_fast(
     if lhs.num_terms * lhs.num_terms == 0:
         return SparsePauliSum([], [], lhs.num_qubits, no_check=True)
 
-    indices, coeffs = _spv_commutator_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs,
+    indices, coeffs = _sps_commutator_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs,
                                            lhs.num_qubits, normalize)
     return SparsePauliSum(indices, coeffs, lhs.num_qubits, no_check=True)
 
 
 @njit(nogil=True)
-def _spv_dot_fast(
+def _sps_dot_fast(
     indices1: np.ndarray,
     coeffs1: np.ndarray,
     indices2: np.ndarray,
@@ -220,10 +220,10 @@ def _spv_dot_fast(
     return result
 
 
-def spv_dot_fast(lhs: SparsePauliSum, rhs: SparsePauliSum) -> complex:
+def sps_dot_fast(lhs: SparsePauliSum, rhs: SparsePauliSum) -> complex:
     if lhs.num_qubits != lhs.num_qubits:
         raise ValueError('Inner product between incompatible SparsePauliSums')
     if lhs.num_terms * lhs.num_terms == 0:
         return SparsePauliSum([], [], lhs.num_qubits, no_check=True)
 
-    return _spv_dot_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs)
+    return _sps_dot_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs)

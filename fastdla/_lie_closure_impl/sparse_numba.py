@@ -7,7 +7,7 @@ from multiprocessing import cpu_count
 import numpy as np
 from numba import njit, objmode
 from fastdla.sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
-from fastdla.sps_fast import abs_square, _uniquify_fast, _spv_commutator_fast, _spv_dot_fast
+from fastdla.sps_fast import abs_square, _uniquify_fast, _sps_commutator_fast, _sps_dot_fast
 
 LOG = logging.getLogger(__name__)
 BASIS_ALLOC_UNIT = 1024
@@ -31,7 +31,7 @@ def _orthogonalize(
     ips = []
     for ib in range(basis_size):
         start, end = basis_ptrs[ib:ib + 2]
-        ip = _spv_dot_fast(basis_indices[start:end], basis_coeffs[start:end],
+        ip = _sps_dot_fast(basis_indices[start:end], basis_coeffs[start:end],
                            new_indices, new_coeffs)
         # Checking exact equality with zero because _spv_dot_fast rounds off close-to-zero ips
         if not (ip.real == 0. and ip.imag == 0.):
@@ -188,7 +188,7 @@ def _update_loop(
 @njit(nogil=True)
 def _commutator(ilhs, lhs_indices, lhs_coeffs, irhs, rhs_indices, rhs_coeffs, num_qubits):
     """Calculate the commutator and return the results together with the row and column numbers."""
-    indices, coeffs = _spv_commutator_fast(lhs_indices, lhs_coeffs, rhs_indices, rhs_coeffs,
+    indices, coeffs = _sps_commutator_fast(lhs_indices, lhs_coeffs, rhs_indices, rhs_coeffs,
                                            num_qubits, True)
     return indices, coeffs, ilhs, irhs
 
