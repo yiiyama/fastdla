@@ -105,9 +105,10 @@ def _main_loop_body(val, keep_original=False, log_level=0):
         icomm = (idx1 * (idx1 + 1)) // 2 + idx2
         jax.lax.cond(
             jnp.equal(icomm % 2000, 0),
-            lambda: jax.debug.print('Basis size {size}; {icomm}th commutator'
+            lambda: jax.debug.print('Basis size {size}; {icomm}th/{total} commutator'
                                     ' [b[{idx1}], b[{idx2}]]',
-                                    size=basis_size, icomm=icomm, idx1=idx1, idx2=idx2),
+                                    size=basis_size, icomm=icomm,
+                                    total=(basis_size - 1) * basis_size // 2, idx1=idx1, idx2=idx2),
             lambda: None
         )
 
