@@ -3,12 +3,12 @@ from collections.abc import Sequence
 from typing import Optional
 import numpy as np
 from ..pauli import PAULIS
-from ..sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
+from ..sparse_pauli_vector import SparsePauliSum, SparsePauliSumArray
 from .spin_chain import translation, translation_eigenspace
 from ..eigenspace import LinearOpFunction, get_eigenspace
 
 
-def z2lgt_hva_generators(num_fermions: int) -> SparsePauliVectorArray:
+def z2lgt_hva_generators(num_fermions: int) -> SparsePauliSumArray:
     r"""Construct the generators of the HVA for the 1+1-dimensional Z2 Lattice gauge theory model
     with periodic boundary condition.
 
@@ -72,19 +72,19 @@ def z2lgt_hva_generators(num_fermions: int) -> SparsePauliVectorArray:
     """
     num_qubits = 4 * num_fermions
 
-    generators = SparsePauliVectorArray(num_qubits=num_qubits)
+    generators = SparsePauliSumArray(num_qubits=num_qubits)
 
     # Field term H_g
     strings = ['I' * (num_qubits - iq - 1) + 'X' + 'I' * iq for iq in range(1, num_qubits, 2)]
     coeffs = np.ones(len(strings)) / np.sqrt(len(strings))
-    generators.append(SparsePauliVector(strings, coeffs))
+    generators.append(SparsePauliSum(strings, coeffs))
 
     # Mass terms H_m (even and odd)
     for parity in [0, 1]:
         strings = ['I' * (num_qubits - isite * 2 - 1) + 'Z' + 'I' * (isite * 2)
                    for isite in range(parity, 2 * num_fermions, 2)]
         coeffs = np.ones(len(strings)) / np.sqrt(len(strings))
-        generators.append(SparsePauliVector(strings, coeffs))
+        generators.append(SparsePauliSum(strings, coeffs))
 
     # Hopping terms H_h (even and odd)
     for parity in [0, 1]:
@@ -97,7 +97,7 @@ def z2lgt_hva_generators(num_fermions: int) -> SparsePauliVectorArray:
                 paulis_reverse[(isite * 2 + 2) % num_qubits] = site_op
                 strings.append(''.join(paulis_reverse[::-1]))
         coeffs = np.ones(len(strings)) / np.sqrt(len(strings))
-        generators.append(SparsePauliVector(strings, coeffs))
+        generators.append(SparsePauliSum(strings, coeffs))
 
     return generators
 
@@ -106,7 +106,7 @@ def z2lgt_gauss_local_projector(
     num_fermions: int,
     isite: int,
     eigval: int
-) -> SparsePauliVector:
+) -> SparsePauliSum:
     r"""Construct the Gauss's law projector for the Z2 LGT model for a single matter site.
 
     Physical states of the Z2 LGT model must be eigenstates of
@@ -154,10 +154,10 @@ def z2lgt_gauss_local_projector(
     paulis_reverse[(isite * 2 + 1) % num_qubits] = 'X'
     strings.append(''.join(paulis_reverse[::-1]))
 
-    return SparsePauliVector(strings, coeffs)
+    return SparsePauliSum(strings, coeffs)
 
 
-def z2lgt_gauss_projector(eigvals: Sequence[int]) -> SparsePauliVector:
+def z2lgt_gauss_projector(eigvals: Sequence[int]) -> SparsePauliSum:
     r"""Construct the Gauss's law projector for the Z2 LGT model.
 
     Physical states of the Z2 LGT model must be eigenstates of
@@ -175,14 +175,14 @@ def z2lgt_gauss_projector(eigvals: Sequence[int]) -> SparsePauliVector:
     num_fermions = num_sites // 2
     num_qubits = 2 * num_sites
 
-    projector = SparsePauliVector('I' * num_qubits, 1.)
+    projector = SparsePauliSum('I' * num_qubits, 1.)
     for isite, ev in enumerate(eigvals):
         projector = projector @ z2lgt_gauss_local_projector(num_fermions, isite, ev)
 
     return projector
 
 
-def z2lgt_u1_projector(num_fermions: int, charge: int) -> SparsePauliVector:
+def z2lgt_u1_projector(num_fermions: int, charge: int) -> SparsePauliSum:
     r"""Construct the charge conservation law projector for the Z2 LGT model.
 
     Physical states of the Z2 LGT model must be eigenstates of
@@ -226,10 +226,10 @@ def z2lgt_u1_projector(num_fermions: int, charge: int) -> SparsePauliVector:
         idx_bin[:, 1] = (idx >> np.arange(num_sites)[::-1]) % 2
         paulis.append(''.join('IZ'[i] for i in idx_bin.reshape(-1)))
 
-    return SparsePauliVector(paulis, coeffs)
+    return SparsePauliSum(paulis, coeffs)
 
 
-def z2lgt_translation_projector(num_fermions: int, jphase: int) -> SparsePauliVector:
+def z2lgt_translation_projector(num_fermions: int, jphase: int) -> SparsePauliSum:
     """Construct the translation projector for the Z2 LGT model.
 
     The Z2 LGT HVA generators commute with the translation operator :math:`T_2`, which shifts state
@@ -282,7 +282,7 @@ def z2lgt_translation_projector(num_fermions: int, jphase: int) -> SparsePauliVe
     indices = np.nonzero(projector)[0]
     coeffs = projector[indices]
 
-    return SparsePauliVector(indices, coeffs, num_qubits=num_qubits)
+    return SparsePauliSum(indices, coeffs, num_qubits=num_qubits)
 
 
 def z2lgt_symmetry_eigenspace(
@@ -354,7 +354,7 @@ def z2lgt_dense_gauss_eigenspace(
         else:
             coeffs = [0.5, -0.5]
 
-        local_projector = SparsePauliVector(['III', 'XZX'], coeffs).to_matrix()
+        local_projector = SparsePauliSum(['III', 'XZX'], coeffs).to_matrix()
         if isite_r == 0:
             eigvals, eigvecs = npmod.linalg.eigh(local_projector)
             indices = npmod.nonzero(npmod.isclose(eigvals, 1.))[0]

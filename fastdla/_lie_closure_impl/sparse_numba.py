@@ -1,4 +1,4 @@
-"""Implementation of the Lie closure generator using SparsePauliVectors."""
+"""Implementation of the Lie closure generator using SparsePauliSums."""
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import logging
 from typing import Optional
@@ -6,12 +6,12 @@ import time
 from multiprocessing import cpu_count
 import numpy as np
 from numba import njit, objmode
-from fastdla.sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
+from fastdla.sparse_pauli_vector import SparsePauliSum, SparsePauliSumArray
 from fastdla.spv_fast import abs_square, _uniquify_fast, _spv_commutator_fast, _spv_dot_fast
 
 LOG = logging.getLogger(__name__)
 BASIS_ALLOC_UNIT = 1024
-MEM_ALLOC_UNIT = SparsePauliVectorArray.MEM_ALLOC_UNIT
+MEM_ALLOC_UNIT = SparsePauliSumArray.MEM_ALLOC_UNIT
 
 
 @njit
@@ -55,14 +55,14 @@ def _orthogonalize(
 
 
 def orthogonalize(
-    new_op: SparsePauliVector,
-    basis: SparsePauliVectorArray,
+    new_op: SparsePauliSum,
+    basis: SparsePauliSumArray,
     normalize: bool = True
-) -> SparsePauliVector:
+) -> SparsePauliSum:
     """Subtract the subspace projection of an algebra element from itself."""
     indices, coeffs = _orthogonalize(new_op.indices, new_op.coeffs, basis.indices, basis.coeffs,
                                      basis.ptrs, normalize)
-    return SparsePauliVector(indices, coeffs, num_qubits=new_op.num_qubits, no_check=True)
+    return SparsePauliSum(indices, coeffs, num_qubits=new_op.num_qubits, no_check=True)
 
 
 @njit
@@ -194,13 +194,13 @@ def _commutator(ilhs, lhs_indices, lhs_coeffs, irhs, rhs_indices, rhs_coeffs, nu
 
 
 def lie_closure(
-    generators: SparsePauliVectorArray,
+    generators: SparsePauliSumArray,
     *,
     keep_original: bool = False,
     max_dim: Optional[int] = None,
     min_tasks: int = 0,
     max_workers: Optional[int] = None
-) -> tuple[SparsePauliVectorArray, SparsePauliVectorArray] | SparsePauliVectorArray:
+) -> tuple[SparsePauliSumArray, SparsePauliSumArray] | SparsePauliSumArray:
     """Compute the Lie closure of given generators.
 
     Args:
@@ -225,10 +225,10 @@ def lie_closure(
     max_dim = max_dim or 4 ** generators.num_qubits - 1
 
     # Allocate the basis and X arrays and compute the initial basis
-    basis = SparsePauliVectorArray([generators[0].normalize()])
+    basis = SparsePauliSumArray([generators[0].normalize()])
 
     if keep_original:
-        nested_commutators = SparsePauliVectorArray([basis[0]])
+        nested_commutators = SparsePauliSumArray([basis[0]])
         source = nested_commutators
     else:
         source = basis
@@ -314,8 +314,8 @@ def lie_closure(
             if keep_original:
                 for ires in independent_elements:
                     nested_commutators.append(
-                        SparsePauliVector(result_indices[ires], result_coeffs[ires],
-                                          num_qubits=basis.num_qubits)
+                        SparsePauliSum(result_indices[ires], result_coeffs[ires],
+                                       num_qubits=basis.num_qubits)
                     )
             if LOG.getEffectiveLevel() <= logging.DEBUG:
                 LOG.debug('Found %d new ops in %.2fs',

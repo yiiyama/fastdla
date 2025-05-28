@@ -1,12 +1,12 @@
 """Generators of the Heisenberg model Hamiltonian variational ansatz."""
 import numpy as np
-from ..sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
+from ..sparse_pauli_vector import SparsePauliSum, SparsePauliSumArray
 
 
 def heisenberg_1d_hva_generators(
     num_spins: int,
     boundary_condition: str = 'periodic'
-) -> SparsePauliVectorArray:
+) -> SparsePauliSumArray:
     r"""Return the generators of 1D Heisenberg model HVA.
 
     The generators are defined as
@@ -39,13 +39,13 @@ def heisenberg_1d_hva_generators(
         paulis[1].append('Y' + 'I' * (num_spins - 2) + 'Y')
         paulis[2].append('Z' + 'I' * (num_spins - 2) + 'Z')
 
-    return SparsePauliVectorArray([SparsePauliVector(p, np.ones(len(p))) for p in paulis])
+    return SparsePauliSumArray([SparsePauliSum(p, np.ones(len(p))) for p in paulis])
 
 
 def xxz_hva_generators(
     num_spins: int,
     subspace_controllable: bool = True
-) -> SparsePauliVectorArray:
+) -> SparsePauliSumArray:
     r"""Return the generators of the XXZ model HVA.
 
     The definition of the generators follows Larocca et al. Quantum 6 (2022):
@@ -84,10 +84,10 @@ def xxz_hva_generators(
         paulis[1].append('I' * (num_spins - iq - 2) + 'YY' + 'I' * iq)
         paulis[3].append('I' * (num_spins - iq - 2) + 'ZZ' + 'I' * iq)
 
-    generators = SparsePauliVectorArray([SparsePauliVector(p, np.ones(len(p))) for p in paulis])
+    generators = SparsePauliSumArray([SparsePauliSum(p, np.ones(len(p))) for p in paulis])
 
     if subspace_controllable:
         paulis = ['I' * (num_spins - 1) + 'Z', 'Z' + 'I' * (num_spins - 1)]
-        generators.append(SparsePauliVector(paulis, [1., 1.]))
+        generators.append(SparsePauliSum(paulis, [1., 1.]))
 
     return generators

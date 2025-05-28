@@ -1,12 +1,12 @@
 """Generators of the transverse-field Ising model HVA."""
 import numpy as np
-from ..sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
+from ..sparse_pauli_vector import SparsePauliSum, SparsePauliSumArray
 
 
 def tfim_1d_hva_generators(
     num_spins: int,
     boundary_condition: str = 'open'
-) -> SparsePauliVectorArray:
+) -> SparsePauliSumArray:
     r"""Return the generators of the transverse-field Ising model HVA.
 
     The generators are defined as
@@ -37,4 +37,4 @@ def tfim_1d_hva_generators(
     if boundary_condition == 'periodic':
         paulis[0].append('Z' + 'I' * (num_spins - iq - 2) + 'Z')
 
-    return SparsePauliVectorArray([SparsePauliVector(p, np.ones(len(p))) for p in paulis])
+    return SparsePauliSumArray([SparsePauliSum(p, np.ones(len(p))) for p in paulis])

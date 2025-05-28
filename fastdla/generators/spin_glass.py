@@ -1,7 +1,7 @@
 """Generators of the spin glass (SG) model ansatz."""
 from typing import Optional
 import numpy as np
-from ..sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
+from ..sparse_pauli_vector import SparsePauliSum, SparsePauliSumArray
 
 
 def spin_glass_generators(
@@ -11,7 +11,7 @@ def spin_glass_generators(
     j_mean: float = 0.,
     j_stddev: float = 1.,
     seed: Optional[int] = None
-) -> SparsePauliVectorArray:
+) -> SparsePauliSumArray:
     r"""Construct the generators of the spin glass (SG) model ansatz.
 
     We adopt the definition of SG in Larocca et al. Quantum 6 (2022):
@@ -43,7 +43,7 @@ def spin_glass_generators(
     coeffs_z = rng.normal(h_mean, h_stddev, num_qubits - 1)
     coeffs_z *= np.arange(num_qubits - 1, 0, -1)
 
-    return SparsePauliVectorArray([
-        SparsePauliVector(paulis_x, np.ones(len(paulis_x))),
-        SparsePauliVector(paulis_z + paulis_zz, np.concatenate([coeffs_z, coeffs_zz]))
+    return SparsePauliSumArray([
+        SparsePauliSum(paulis_x, np.ones(len(paulis_x))),
+        SparsePauliSum(paulis_z + paulis_zz, np.concatenate([coeffs_z, coeffs_zz]))
     ])

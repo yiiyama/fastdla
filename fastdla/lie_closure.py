@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 import logging
 from typing import Any, Optional
-from fastdla.sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
+from fastdla.sparse_pauli_vector import SparsePauliSum, SparsePauliSumArray
 
 LOG = logging.getLogger(__name__)
 AlgebraElement = Any
@@ -23,7 +23,7 @@ def orthogonalize(
 
         t = h - \sum_{j=0}^{n-1} \langle g_j, h \rangle g_j.
     """
-    if isinstance(op, SparsePauliVector):
+    if isinstance(op, SparsePauliSum):
         from fastdla._lie_closure_impl.sparse_numba import orthogonalize as fn
     else:
         from fastdla._lie_closure_impl.matrix_jax import orthogonalize as fn
@@ -71,10 +71,10 @@ def lie_closure(
         A list of linearly independent nested commutators and the orthonormal basis if
         keep_original=True, otherwise only the orthonormal basis.
     """
-    if isinstance(generators, list) and isinstance(generators[0], SparsePauliVector):
-        generators = SparsePauliVectorArray(generators)
+    if isinstance(generators, list) and isinstance(generators[0], SparsePauliSum):
+        generators = SparsePauliSumArray(generators)
 
-    if isinstance(generators, SparsePauliVectorArray):
+    if isinstance(generators, SparsePauliSumArray):
         from fastdla._lie_closure_impl.sparse_numba import lie_closure as fn
     else:
         from fastdla._lie_closure_impl.matrix_jax import lie_closure as fn

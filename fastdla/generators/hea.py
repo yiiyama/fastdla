@@ -1,9 +1,9 @@
 """Generators of the hardware-efficient ansatz (HEA)."""
 import numpy as np
-from ..sparse_pauli_vector import SparsePauliVector, SparsePauliVectorArray
+from ..sparse_pauli_vector import SparsePauliSum, SparsePauliSumArray
 
 
-def hea_generators(num_qubits: int) -> SparsePauliVectorArray:
+def hea_generators(num_qubits: int) -> SparsePauliSumArray:
     r"""Construct the generators of the hardware-efficient ansatz.
 
     We adopt the definition of HEA in Larocca et al. Quantum 6 (2022):
@@ -19,11 +19,11 @@ def hea_generators(num_qubits: int) -> SparsePauliVectorArray:
 
     for iq in range(num_qubits):
         string = 'I' * (num_qubits - iq - 1) + 'X' + 'I' * iq
-        generators.append(SparsePauliVector(string, 1.))
+        generators.append(SparsePauliSum(string, 1.))
         string = 'I' * (num_qubits - iq - 1) + 'Y' + 'I' * iq
-        generators.append(SparsePauliVector(string, 1.))
+        generators.append(SparsePauliSum(string, 1.))
 
     zz_strings = ['I' * (num_qubits - iq - 2) + 'ZZ' + 'I' * iq for iq in range(num_qubits - 1)]
-    generators.append(SparsePauliVector(zz_strings, np.ones(num_qubits - 1)))
+    generators.append(SparsePauliSum(zz_strings, np.ones(num_qubits - 1)))
 
-    return SparsePauliVectorArray(generators)
+    return SparsePauliSumArray(generators)

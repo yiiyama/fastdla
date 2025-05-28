@@ -1,9 +1,9 @@
-"""Numba-compiled versions of SparsePauliVector operations."""
+"""Numba-compiled versions of SparsePauliSum operations."""
 import logging
 import numpy as np
 from numba import njit
 from .pauli import PAULI_MULT_COEFF, PAULI_MULT_INDEX
-from .sparse_pauli_vector import SparsePauliVector
+from .sparse_pauli_vector import SparsePauliSum
 
 LOG = logging.getLogger(__name__)
 
@@ -87,17 +87,17 @@ def _spv_add_fast(
 
 
 def spv_add_fast(
-    lhs: SparsePauliVector,
-    rhs: SparsePauliVector,
+    lhs: SparsePauliSum,
+    rhs: SparsePauliSum,
     normalize: bool = False
-) -> SparsePauliVector:
+) -> SparsePauliSum:
     if lhs.num_qubits != lhs.num_qubits:
-        raise ValueError('Sum between incompatible SparsePauliVectors')
+        raise ValueError('Sum between incompatible SparsePauliSums')
     if lhs.num_terms * lhs.num_terms == 0:
-        return SparsePauliVector([], [], lhs.num_qubits, no_check=True)
+        return SparsePauliSum([], [], lhs.num_qubits, no_check=True)
 
     indices, coeffs = _spv_add_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs, normalize)
-    return SparsePauliVector(indices, coeffs, lhs.num_qubits, no_check=True)
+    return SparsePauliSum(indices, coeffs, lhs.num_qubits, no_check=True)
 
 
 @njit(nogil=True)
@@ -109,7 +109,7 @@ def _spv_matmul_fast(
     num_qubits: int,
     normalize: bool
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compiled version of SparsePauliVector product."""
+    """Compiled version of SparsePauliSum product."""
     coeffs = np.outer(coeffs1, coeffs2)
     indices = np.zeros((indices1.shape[0], indices2.shape[0]), dtype=indices1.dtype)
     for iq in range(num_qubits):
@@ -127,18 +127,18 @@ def _spv_matmul_fast(
 
 
 def spv_matmul_fast(
-    lhs: SparsePauliVector,
-    rhs: SparsePauliVector,
+    lhs: SparsePauliSum,
+    rhs: SparsePauliSum,
     normalize: bool = False
-) -> SparsePauliVector:
+) -> SparsePauliSum:
     if lhs.num_qubits != lhs.num_qubits:
-        raise ValueError('Matmul between incompatible SparsePauliVectors')
+        raise ValueError('Matmul between incompatible SparsePauliSums')
     if lhs.num_terms * lhs.num_terms == 0:
-        return SparsePauliVector([], [], lhs.num_qubits, no_check=True)
+        return SparsePauliSum([], [], lhs.num_qubits, no_check=True)
 
     indices, coeffs = _spv_matmul_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs,
                                        lhs.num_qubits, normalize)
-    return SparsePauliVector(indices, coeffs, lhs.num_qubits, no_check=True)
+    return SparsePauliSum(indices, coeffs, lhs.num_qubits, no_check=True)
 
 
 @njit(nogil=True)
@@ -150,7 +150,7 @@ def _spv_commutator_fast(
     num_qubits: int,
     normalize: bool
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compiled version of SparsePauliVector commutator."""
+    """Compiled version of SparsePauliSum commutator."""
     coeffs = np.zeros((indices1.shape[0], indices2.shape[0]), dtype=coeffs1.dtype)
     indices = np.zeros((indices1.shape[0], indices2.shape[0]), dtype=indices1.dtype)
     iqs = np.arange(num_qubits)
@@ -175,18 +175,18 @@ def _spv_commutator_fast(
 
 
 def spv_commutator_fast(
-    lhs: SparsePauliVector,
-    rhs: SparsePauliVector,
+    lhs: SparsePauliSum,
+    rhs: SparsePauliSum,
     normalize: bool = False
-) -> SparsePauliVector:
+) -> SparsePauliSum:
     if lhs.num_qubits != lhs.num_qubits:
-        raise ValueError('Matmul between incompatible SparsePauliVectors')
+        raise ValueError('Commutator between incompatible SparsePauliSums')
     if lhs.num_terms * lhs.num_terms == 0:
-        return SparsePauliVector([], [], lhs.num_qubits, no_check=True)
+        return SparsePauliSum([], [], lhs.num_qubits, no_check=True)
 
     indices, coeffs = _spv_commutator_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs,
                                            lhs.num_qubits, normalize)
-    return SparsePauliVector(indices, coeffs, lhs.num_qubits, no_check=True)
+    return SparsePauliSum(indices, coeffs, lhs.num_qubits, no_check=True)
 
 
 @njit(nogil=True)
@@ -220,10 +220,10 @@ def _spv_dot_fast(
     return result
 
 
-def spv_dot_fast(lhs: SparsePauliVector, rhs: SparsePauliVector) -> complex:
+def spv_dot_fast(lhs: SparsePauliSum, rhs: SparsePauliSum) -> complex:
     if lhs.num_qubits != lhs.num_qubits:
-        raise ValueError('Matmul between incompatible SparsePauliVectors')
+        raise ValueError('Inner product between incompatible SparsePauliSums')
     if lhs.num_terms * lhs.num_terms == 0:
-        return SparsePauliVector([], [], lhs.num_qubits, no_check=True)
+        return SparsePauliSum([], [], lhs.num_qubits, no_check=True)
 
     return _spv_dot_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs)
