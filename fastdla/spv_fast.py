@@ -21,6 +21,11 @@ def abs_square(value):
 
 @njit(nogil=True, inline='always')
 def _check_finite(coeff, atol_real, atol_imag, iout, normsq):
+    """Check for rounding errors in cancellations.
+
+    *WARNING* This procedure can eliminate legitimately small result in cases like a sum of two
+    large and cancelling values and a small value.
+    """
     atol = max(atol_real, atol_imag) * 1.e-5
     if complex_isclose(coeff, 0., atol=atol):
         return iout, normsq
@@ -212,8 +217,6 @@ def _spv_dot_fast(
     atol = max(atol_real, atol_imag) * 1.e-5
     if complex_isclose(result, 0., atol=atol):
         return 0.+0.j
-    if complex_isclose(result, 0., atol=1.e-5):
-        LOG.debug('close ip %s %s %s %s', indices1, coeffs1, indices2, coeffs2)
     return result
 
 
