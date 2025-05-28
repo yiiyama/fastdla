@@ -1,6 +1,6 @@
 """Generators of the hardware-efficient ansatz (HEA)."""
 import numpy as np
-from ..sparse_pauli_vector import SparsePauliSum, SparsePauliSumArray
+from ..sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
 
 
 def hea_generators(num_qubits: int) -> SparsePauliSumArray:

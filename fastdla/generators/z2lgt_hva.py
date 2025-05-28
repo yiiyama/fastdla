@@ -3,7 +3,7 @@ from collections.abc import Sequence
 from typing import Optional
 import numpy as np
 from ..pauli import PAULIS
-from ..sparse_pauli_vector import SparsePauliSum, SparsePauliSumArray
+from ..sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
 from .spin_chain import translation, translation_eigenspace
 from ..eigenspace import LinearOpFunction, get_eigenspace
 

@@ -3,7 +3,7 @@ import logging
 import numpy as np
 from numba import njit
 from .pauli import PAULI_MULT_COEFF, PAULI_MULT_INDEX
-from .sparse_pauli_vector import SparsePauliSum
+from .sparse_pauli_sum import SparsePauliSum
 
 LOG = logging.getLogger(__name__)
 

@@ -1,7 +1,7 @@
 """Generators of the spin glass (SG) model ansatz."""
 from typing import Optional
 import numpy as np
-from ..sparse_pauli_vector import SparsePauliSum, SparsePauliSumArray
+from ..sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
 
 
 def spin_glass_generators(

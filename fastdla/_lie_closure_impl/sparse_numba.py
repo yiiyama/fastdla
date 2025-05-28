@@ -6,7 +6,7 @@ import time
 from multiprocessing import cpu_count
 import numpy as np
 from numba import njit, objmode
-from fastdla.sparse_pauli_vector import SparsePauliSum, SparsePauliSumArray
+from fastdla.sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
 from fastdla.spv_fast import abs_square, _uniquify_fast, _spv_commutator_fast, _spv_dot_fast
 
 LOG = logging.getLogger(__name__)

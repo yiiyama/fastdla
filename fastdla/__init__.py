@@ -5,7 +5,7 @@ __version__ = version(__name__)
 
 from .eigenspace import get_eigenspace
 from .lie_closure import lie_closure, orthogonalize
-from .sparse_pauli_vector import SparsePauliSum, SparsePauliSumArray
+from .sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
 
 __all__ = [
     'get_eigenspace',

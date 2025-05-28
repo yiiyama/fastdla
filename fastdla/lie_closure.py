@@ -3,7 +3,7 @@
 from collections.abc import Sequence
 import logging
 from typing import Any, Optional
-from fastdla.sparse_pauli_vector import SparsePauliSum, SparsePauliSumArray
+from fastdla.sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
 
 LOG = logging.getLogger(__name__)
 AlgebraElement = Any
