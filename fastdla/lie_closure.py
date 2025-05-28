@@ -34,7 +34,7 @@ def orthogonalize(
 def lie_closure(
     generators: Any,
     *,
-    keep_original: bool = True,
+    keep_original: bool = False,
     max_dim: Optional[int] = None,
     **kwargs
 ) -> tuple[Basis, Basis] | Basis:

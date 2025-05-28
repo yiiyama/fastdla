@@ -195,7 +195,7 @@ def _commutator(ilhs, lhs_indices, lhs_coeffs, irhs, rhs_indices, rhs_coeffs, nu
 def lie_closure(
     generators: SparsePauliVectorArray,
     *,
-    keep_original: bool = True,
+    keep_original: bool = False,
     max_dim: Optional[int] = None,
     min_tasks: int = 0,
     max_workers: Optional[int] = None
