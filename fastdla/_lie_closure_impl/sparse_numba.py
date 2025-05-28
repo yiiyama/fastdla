@@ -200,7 +200,7 @@ def lie_closure(
     max_dim: Optional[int] = None,
     min_tasks: int = 0,
     max_workers: Optional[int] = None
-) -> SparsePauliVectorArray:
+) -> tuple[SparsePauliVectorArray, SparsePauliVectorArray] | SparsePauliVectorArray:
     """Compute the Lie closure of given generators.
 
     Args:
