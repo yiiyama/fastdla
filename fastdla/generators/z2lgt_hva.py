@@ -472,14 +472,12 @@ def z2lgt_dense_u1_eigenspace(
 
 
 def z2lgt_dense_translation(
-    jphase: int,
     num_fermions: int,
     npmod=np
 ) -> tuple[LinearOpFunction, complex]:
     r"""Return a function that applies the translation :math:`T_2` to state vectors.
 
     Args:
-        jphase: Integer :math:`j` of the :math:`T_2` eigenvalue :math:`e^{2\pi i j/N_f}`.
         num_fermions: :math:`N_f`.
 
     Returns:
@@ -487,7 +485,7 @@ def z2lgt_dense_translation(
         :math:`e^{2\pi i j/N_f}`.
     """
     num_qubits = num_fermions * 4
-    return translation(jphase, num_qubits, shift=4, npmod=npmod)
+    return translation(num_qubits, shift=4, npmod=npmod)
 
 
 def z2lgt_dense_translation_eigenspace(
