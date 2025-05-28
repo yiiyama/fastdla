@@ -12,11 +12,11 @@ class SparsePauliSum:
     @classmethod
     def switch_impl(cls, to: str):
         if to == 'ref':
-            cls.__add__ = spv_add
-            cls.__sub__ = lambda self, other: spv_add(self, -other)
-            cls.__matmul__ = spv_matmul
-            cls.commutator = spv_commutator
-            cls.dot = spv_dot
+            cls.__add__ = sps_add
+            cls.__sub__ = lambda self, other: sps_add(self, -other)
+            cls.__matmul__ = sps_matmul
+            cls.commutator = sps_commutator
+            cls.dot = sps_dot
         elif to == 'fast':
             # pylint: disable-next=import-outside-toplevel
             from fastdla.sps_fast import (sps_add_fast, sps_matmul_fast, sps_commutator_fast,
@@ -121,10 +121,10 @@ class SparsePauliSum:
         return SparsePauliSum(self.indices, -self.coeffs, self.num_qubits, no_check=True)
 
     def __add__(self, other: 'SparsePauliSum') -> 'SparsePauliSum':
-        return spv_add(self, other)
+        return sps_add(self, other)
 
     def __sub__(self, other: 'SparsePauliSum') -> 'SparsePauliSum':
-        return spv_add(self, -other)
+        return sps_add(self, -other)
 
     def __mul__(self, scalar: Number) -> 'SparsePauliSum':
         try:
@@ -137,17 +137,17 @@ class SparsePauliSum:
         return self.__mul__(scalar)
 
     def __matmul__(self, other: 'SparsePauliSum') -> 'SparsePauliSum':
-        return spv_matmul(self, other)
+        return sps_matmul(self, other)
 
     def commutator(
         self,
         other: 'SparsePauliSum',
         normalize: bool = False
     ) -> 'SparsePauliSum':
-        return spv_commutator(self, other, normalize)
+        return sps_commutator(self, other, normalize)
 
     def dot(self, other: 'SparsePauliSum') -> complex:
-        return spv_dot(self, other)
+        return sps_dot(self, other)
 
     def to_csr(self) -> csr_array:
         shape = (1, self.vlen)
@@ -156,7 +156,7 @@ class SparsePauliSum:
     @staticmethod
     def from_csr(array: csr_array, num_qubits: int) -> 'SparsePauliSum':
         if array.shape[0] != 1:
-            raise ValueError('Only a single-row array can be converted to SPV')
+            raise ValueError('Only a single-row array can be converted to a SparsePauliSum')
         return SparsePauliSum(array.indices, array.data, num_qubits, no_check=True)
 
     def to_dense(self) -> np.ndarray:
@@ -316,7 +316,7 @@ def _uniquify(
     return indices_uniq, coeffs_uniq
 
 
-def spv_add(*ops, normalize: bool = False) -> SparsePauliSum:
+def sps_add(*ops, normalize: bool = False) -> SparsePauliSum:
     """Sum of sparse Pauli ops."""
     indices, coeffs = _uniquify(
         np.concatenate([op.indices for op in ops]),
@@ -326,7 +326,7 @@ def spv_add(*ops, normalize: bool = False) -> SparsePauliSum:
     return SparsePauliSum(indices, coeffs, ops[0].num_qubits, no_check=True)
 
 
-def spv_matmul(
+def sps_matmul(
     o1: SparsePauliSum,
     o2: SparsePauliSum,
     normalize: bool = False
@@ -349,7 +349,7 @@ def spv_matmul(
     return SparsePauliSum(indices, coeffs, num_qubits, no_check=True)
 
 
-def spv_commutator(
+def sps_commutator(
     o1: SparsePauliSum,
     o2: SparsePauliSum,
     normalize: bool = False
@@ -361,13 +361,13 @@ def spv_commutator(
     comms = []
     for lhs, rhs in [(o1h, o2h), (o1a, o2a)]:
         if lhs.num_terms * rhs.num_terms != 0:
-            comms.append(2. * spv_matmul(lhs, rhs).apart)
+            comms.append(2. * sps_matmul(lhs, rhs).apart)
     for lhs, rhs in [(o1h, o2a), (o1a, o2h)]:
         if lhs.num_terms * rhs.num_terms != 0:
-            comms.append(2. * spv_matmul(lhs, rhs).hpart)
-    return spv_add(*comms, normalize=normalize)
+            comms.append(2. * sps_matmul(lhs, rhs).hpart)
+    return sps_add(*comms, normalize=normalize)
 
 
-def spv_dot(o1: SparsePauliSum, o2: SparsePauliSum) -> complex:
+def sps_dot(o1: SparsePauliSum, o2: SparsePauliSum) -> complex:
     common_entries = np.nonzero(o1.indices[:, None] - o2.indices[None, :] == 0)
     return np.sum(o1.coeffs[common_entries[0]].conjugate() * o2.coeffs[common_entries[1]])

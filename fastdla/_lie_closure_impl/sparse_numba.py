@@ -33,7 +33,7 @@ def _orthogonalize(
         start, end = basis_ptrs[ib:ib + 2]
         ip = _sps_dot_fast(basis_indices[start:end], basis_coeffs[start:end],
                            new_indices, new_coeffs)
-        # Checking exact equality with zero because _spv_dot_fast rounds off close-to-zero ips
+        # Checking exact equality with zero because _sps_dot_fast rounds off close-to-zero ips
         if not (ip.real == 0. and ip.imag == 0.):
             nonzero_idx.append(ib)
             ips.append(ip)
