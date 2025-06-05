@@ -223,7 +223,6 @@ def _main_loop_body(
     return idx1, idx2, basis, basis_size, *aux
 
 
-@jax.jit
 def _resize_basis(
     basis: Array,
     size: int,
@@ -233,7 +232,6 @@ def _resize_basis(
     return jnp.resize(basis, new_shape).at[size:].set(0.),
 
 
-@jax.jit
 def _resize_basis_and_x(
     basis: Array,
     size: int,
@@ -247,7 +245,6 @@ def _resize_basis_and_x(
     return basis, xmat, xinv
 
 
-@jax.jit
 def _resize_basis_and_commlist(
     basis: Array,
     size: int,
