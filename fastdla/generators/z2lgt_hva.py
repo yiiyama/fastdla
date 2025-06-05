@@ -311,33 +311,43 @@ def z2lgt_dense_gauss_eigenspace(
     gauss_eigvals: Sequence[int],
     npmod=np
 ) -> np.ndarray:
-    """Get the eigenspace basis of Gauss's law operators.
+    r"""Get the eigenspace basis of Gauss's law operators.
 
     The construction follows the projection algorithm for multiple symmetries proposed by LN. To
-    avoid constructing the full 2^nq x 2^nq matrix, we compose the final projector from local-term
-    projectors, extending the dimension as necessary.
+    avoid constructing the full :math:`2^{n_q} \times 2^{n_q}` matrix, we compose the final
+    projector from local-term projectors, extending the dimension as necessary.
 
-    Algorithm:
-    Let the number of matter sites be M, qubits be counted from right to left, and qubit 0
+    **Algorithm:**
+
+    Let the number of matter sites be :math:`M`, qubits be counted from right to left, and qubit 0
     correspond to matter site 0.
-    1) Start with a local projector Q(0) for the left-most (M-1) XZX symmetry generator. Obtain a
-        projector P(0)=Q(0) with shape (p(0), d(0)=8).
-    2) For a quark site M-i-1 (i=1,...,M-2), extend the dimensions of the current projector P(i-1)
-        by 4 to the right, then project the local Q(i) to
-        R(i)=[P(i-1)⊗I⊗I][I⊗..⊗I⊗Q(i)][P(i-1)†⊗I⊗I] (shape (p(i-1)x4, p(i-1)x4)). Assemble the
-        eigenvectors of R(i) with eigenvalue 1 into S(i)=(v_0..v_{p(i)}) (shape (p(i-1)x4, p(i)))
-        and apply S(i)† to the current projector to obtain P(i)=S(i)†[P(i-1)⊗I⊗I]
-        (shape (p(i), d(i)=d(i-1)x4)).
-    3) For quark site 0 (i=M-1), extend the dimension of P(M-2) only by 2. The "local" projector
-        actually acts on the leftmost qubit as well as the rightmost two. R(M-1) and S(M-1) have
-        shapes (p(M-2)x2, p(M-2)x2) and (p(M-2)x2, p(M-1)) and the final projector will be
-        (p(M-1), d(M-1)=d(M-2)x2=2**nq).
+
+    Start with a local projector :math:`Q(0)` for the left-most (:math:`M-1`) XZX symmetry
+    generator. Obtain a projector :math:`P(0)=Q(0)` with shape ``(p(0), d(0)=8)``.
+
+    For a quark site :math:`M-i-1 \; (i=1,...,M-2)`, extend the dimensions of the current projector
+    :math:`P(i-1)` by 4 to the right, then project the local :math:`Q(i)` to
+
+    .. math::
+
+        R(i) = [P(i-1) \otimes I \otimes I] [I \otimes \cdots \otimes I \otimes Q(i)]
+               [P(i-1)^{\dagger} \otimes I \otimes I]
+
+    (shape ``(p(i-1)x4, p(i-1)x4)``). Assemble the eigenvectors of :math:`R(i)` with eigenvalue 1
+    into :math:`S(i)=(v_0..v_{p(i)})` (shape (p(i-1)x4, p(i))) and apply :math:`S(i)^{\dagger}` to
+    the current projector to obtain :math:`P(i)=S(i)^{\dagger}[P(i-1) \otimes I \otimes I]` (shape
+    ``(p(i), d(i)=d(i-1)x4)``).
+
+    For quark site 0 (:math:`i=M-1`), extend the dimension of :math:`P(M-2)` only by 2. The "local"
+    projector actually acts on the leftmost qubit as well as the rightmost two. :math:`R(M-1)` and
+    :math:`S(M-1)` have shapes ``(p(M-2)x2, p(M-2)x2)`` and ``(p(M-2)x2, p(M-1))`` and the final
+    projector will be ``(p(M-1), d(M-1)=d(M-2)x2=2**nq)``.
 
     Args:
         gauss_eigvals: Sequence (length :math:`2N_f`) of eigenvalues (±1) of :math:`G_n`.
 
     Returns:
-        An array of shape (2**N_q, 2**N_s), which represents the basis column vectors of the
+        An array of shape ``(2**N_q, 2**N_s)``, which represents the basis column vectors of the
         eigenspace.
     """
     if len(gauss_eigvals) % 2 or not all(abs(ev) == 1 for ev in gauss_eigvals):

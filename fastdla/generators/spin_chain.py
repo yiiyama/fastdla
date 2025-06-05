@@ -108,7 +108,7 @@ def translation_eigenspace(
     shift: int = 1,
     npmod=np
 ) -> np.ndarray:
-    r"""Extract the :math:`j`th eigenspace of the translation :math:`T_s`.
+    r"""Extract an eigenspace of the translation.
 
     Args:
         jphase: Integer :math:`j` of the :math:`T_s` eigenvalue :math:`e^{2\pi i j s /N}`.

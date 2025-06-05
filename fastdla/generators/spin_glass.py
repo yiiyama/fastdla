@@ -18,11 +18,11 @@ def spin_glass_generators(
 
     .. math::
 
-        \mathcal{G}_{\mathrm{SG}} = \left\{
+        & \mathcal{G}_{\mathrm{SG}} = \left\{
                                         \sum_{n=0}^{N_q - 1} X_n,
                                         \sum_{m<n} h_m Z_m + J_{mn} Z_{m} Z_{n}
                                     \right\}, \\
-        h_m, J_{mn} \in \mathbb{R}.
+        & h_m, J_{mn} \in \mathbb{R}.
 
     This set of generators are proven to close to a full rank DLA in the reference.
     """

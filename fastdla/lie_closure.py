@@ -16,12 +16,22 @@ def orthogonalize(
 ) -> AlgebraElement:
     r"""Subtract the subspace projection of an algebra element from itself.
 
-    Let the orthonormal basis be :math:`B = \{g_j\}_{j=0}^{n-1}`. The orthogonal component of
-    :math:`h` with respect to :math:`B` is given by
+    Let the orthonormal basis be :math:`V = \{g_j\}_{j=0}^{n-1}`. The orthogonal component of
+    :math:`h` with respect to :math:`V` is given by
 
     .. math::
 
-        t = h - \sum_{j=0}^{n-1} \langle g_j, h \rangle g_j.
+        h_{\perp} & = h - \mathrm{proj}_V h \\
+                  & = h - \sum_{j=0}^{n-1} \langle g_j, h \rangle g_j.
+
+    The inputs to this function can be given in the matrix or SparsePauliSum representations.
+
+    Args:
+        op: Operator :math:`h` to be orthogonalized from :math:`V`.
+        basis: Basis :math:`V`.
+
+    Returns:
+        Orthogonal component :math:`h_{\perp}`.
     """
     if isinstance(op, SparsePauliSum):
         from fastdla._lie_closure_impl.sparse_numba import orthogonalize as fn
@@ -40,26 +50,35 @@ def lie_closure(
 ) -> tuple[Basis, Basis] | Basis:
     """Compute the Lie closure of given generators.
 
-    Lie closure generation follows the standard algorithm of e.g. Algorithm 1 in Wiersema et al. npj
-    quant. info. 10 (1):
+    Lie closure generation follows the orthonormalization algorithm in *arXiv:2506.01120*:
 
-    .. code-block::
+    .. code-block:: python
 
-        Input: Set of generators A
-        for a_i in A do
-            for a_j in A do
-                a_k = [a_i, a_j] / |[a_i, a_j]|
-                if a_k not in span(A) then
-                    A <- A U {a_k}
-                endif
-            end
-        end
+        V = []
+        for g in G:
+            g_perp = orthogonalize(g, V)
+            if g_perp != 0:
+                V.append(g_perp / norm(g_perp))
 
-    Specific implementations employ different optimization strategies in the loop.
+        l = 1
+        r = 0
+        while l < len(V):
+            for m in range(r):
+                h = commutator(V[l], V[m])
+                h_perp = orthogonalize(h, V)
+                if h_perp != 0:
+                    V.append(h_perp / norm(h_perp))
 
-    For an efficient linear independence check, we hold the orthonormalized basis of span(A) in
-    memory. The check then becomes equivalent to extracting the normal component of a_k with respect
-    to such basis.
+            r += 1
+            if r == l:
+                l += 1
+                r = 0
+
+    If keep_original is True, there will be an additional list ``B`` which stores the actual nested
+    commutators ``h``. The function then returns both ``B`` and ``V``.
+
+    The inputs to this function can be given in the matrix or SparsePauliSum representations. If
+    matrices are given, JAX-based implementation will be called.
 
     Args:
         generators: Lie algebra elements to compute the closure from.

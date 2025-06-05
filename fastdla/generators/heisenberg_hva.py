@@ -52,13 +52,13 @@ def xxz_hva_generators(
 
     .. math::
 
-        \mathcal{G}_{\mathrm{XXZ}_U} = \left\{
+        \mathcal{G}_{\mathrm{XXZ}_U} & = \left\{
                                         \sum_{n \mathrm{even}} (X_n X_{n+1} + Y_n Y_{n+1}),
                                         \sum_{n \mathrm{odd}} (X_n X_{n+1} + Y_n Y_{n+1}),
                                         \sum_{n \mathrm{even}} Z_n Z_{n+1},
                                         \sum_{n \mathrm{odd}} Z_n Z_{n+1}
                                        \right\} \\
-        \mathcal{G}_{\mathrm{XXZ}} = \mathcal{G}_{\mathrm{XXZ}_U} \cup \{Z_0 + Z_{N-1}\}.
+        \mathcal{G}_{\mathrm{XXZ}} & = \mathcal{G}_{\mathrm{XXZ}_U} \cup \{Z_0 + Z_{N-1}\}.
 
     The generators commute with magnetization
 

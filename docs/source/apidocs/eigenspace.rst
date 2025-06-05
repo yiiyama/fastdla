@@ -4,6 +4,8 @@
 Eigenspace projection
 =====================
 
+Eigenspace extraction functions.
+
 .. autosummary::
    :toctree: ../generated
    :recursive:

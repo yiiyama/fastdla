@@ -8,9 +8,31 @@ from .pauli import PauliProduct
 
 
 class SparsePauliSum:
-    """Purpose-specific implementation of a sparse Pauli operator."""
+    """Purpose-specific implementation of a sparse Pauli operator.
+
+    ``SparsePauliSum`` is conceptually an array of ``PauliProduct``s with complex coefficients.
+    Internally, the Pauli product indices and coefficients are stored separately as numpy arrays.
+
+    Args:
+        indices: A list of parameters, each of which can initialize a PauliProduct. A single integer
+            or str is allowed, in which case a length-1 Pauli sum is initialized.
+        coeffs: Array of coefficients corresponding to the Pauli products specified by ``indices``.
+        num_qubits: Required if Pauli products are specified using the compact index.
+        no_check: If True, ``indices`` is assumed to be an array of compact indices, and no
+            formatting will be performed.
+    """
     @classmethod
     def switch_impl(cls, to: str):
+        """Switch the implementation of operators.
+
+        The options are
+
+        * 'ref': Reference implementation using numpy functions.
+        * 'fast': Numba-based implementation.
+
+        Args:
+            to: Name of the implementation to switch to.
+        """
         if to == 'ref':
             cls.__add__ = sps_add
             cls.__sub__ = lambda self, other: sps_add(self, -other)
@@ -29,7 +51,7 @@ class SparsePauliSum:
 
     def __init__(
         self,
-        indices: str | int | Sequence[str] | Sequence[int],
+        indices: str | int | Sequence[str] | Sequence[Sequence[int]] | Sequence[int],
         coeffs: Number | Sequence[Number],
         num_qubits: Optional[int] = None,
         no_check: bool = False
@@ -54,6 +76,8 @@ class SparsePauliSum:
         if isinstance(indices[0], str):
             num_qubits = len(indices[0])
             indices = np.array([PauliProduct.str_to_idx(pstr) for pstr in indices], dtype=np.uint64)
+        elif isinstance(indices[0], Sequence):
+            indices = np.array([PauliProduct.seq_to_idx(plst) for plst in indices], dtype=np.uint64)
         elif num_qubits is None:
             raise ValueError('Need num_qubits')
         else:
@@ -77,18 +101,22 @@ class SparsePauliSum:
 
     @property
     def shape(self) -> tuple[int]:
+        """Shape of the Pauli tensor."""
         return (4,) * self.num_qubits
 
     @property
     def vlen(self) -> int:
+        """Length of the Pauli vector."""
         return 4**self.num_qubits
 
     @property
     def num_terms(self) -> int:
+        """Number of terms in the sum."""
         return self.indices.shape[0]
 
     @property
     def paulis(self) -> list[str]:
+        """Return the list of PauliProducts in the string representation."""
         return [str(PauliProduct(idx, self.num_qubits)) for idx in self.indices]
 
     @property
@@ -106,6 +134,7 @@ class SparsePauliSum:
                               self.num_qubits, no_check=True)
 
     def normalize(self) -> 'SparsePauliSum':
+        """Return a normalized copy of this Pauli sum."""
         norm = np.sqrt(np.sum(np.square(np.abs(self.coeffs))))
         return SparsePauliSum(self.indices.copy(), self.coeffs / norm, self.num_qubits,
                               no_check=True)
@@ -144,31 +173,33 @@ class SparsePauliSum:
         other: 'SparsePauliSum',
         normalize: bool = False
     ) -> 'SparsePauliSum':
+        """Return the commutator [self, other]."""
         return sps_commutator(self, other, normalize)
 
     def dot(self, other: 'SparsePauliSum') -> complex:
+        """Return the inner product <self, other>."""
         return sps_dot(self, other)
 
     def to_csr(self) -> csr_array:
+        """Convert to a sparse Pauli vector in the CSR format."""
         shape = (1, self.vlen)
         return csr_array((self.coeffs, self.indices, [0, self.num_terms]), shape=shape)
 
     @staticmethod
     def from_csr(array: csr_array, num_qubits: int) -> 'SparsePauliSum':
+        """Convert from a sparse Pauli vector in the CSR format."""
         if array.shape[0] != 1:
             raise ValueError('Only a single-row array can be converted to a SparsePauliSum')
         return SparsePauliSum(array.indices, array.data, num_qubits, no_check=True)
 
     def to_dense(self) -> np.ndarray:
+        """Convert to a dense Pauli vector."""
         dense = np.zeros(self.vlen, dtype=self.coeffs.dtype)
         dense[self.indices] = self.coeffs
         return dense
 
     def to_matrix(self, *, sparse: bool = False, npmod=np) -> np.ndarray:
-        """Convert the Pauli sum to a dense (2**num_qubits, 2**num_qubits) matrix.
-
-        SparsePauliOp.to_matrix() seems to have a much more efficient implementation.
-        """
+        """Convert the Pauli sum to a dense (2**num_qubits, 2**num_qubits) matrix."""
         matrix = (
             PauliProduct(self.indices[0], self.num_qubits).to_matrix(sparse=sparse, npmod=npmod)
             * self.coeffs[0]
@@ -180,7 +211,18 @@ class SparsePauliSum:
 
 
 class SparsePauliSumArray:
-    """A container of SparsePauliSums with concatenated data."""
+    """A container of SparsePauliSums with concatenated data.
+
+    Conceptually, ``SparsePauliSumArray`` is simply a list of ``SparsePauliSum``s, and have
+    interfaces that resemble a list (such as ``append``, ``__getitem__``, and ``__len__``).
+    Internally, the indices and coeffs are directly concatenated into single arrays.
+
+    Args:
+        pauli_sums: List of SparsePauliSums.
+        num_qubits: Used when initializing a length-0 array. If not given, num_qubits of the first
+            SparsePauliSum to be appended will be used.
+        initial_capacity: Initial maximum size of the concatenated arrays.
+    """
     MEM_ALLOC_UNIT = 1024
 
     def __init__(
@@ -212,14 +254,17 @@ class SparsePauliSumArray:
 
     @property
     def shape(self) -> tuple[int]:
+        """Shape of the array as a list of Pauli tensors."""
         return (len(self),) + (4,) * self.num_qubits
 
     @property
     def vlen(self) -> int:
+        """Length of the component Pauli vectors."""
         return 4**self.num_qubits
 
     @property
     def capacity(self) -> int:
+        """Current maximum size of the concatenated arrays."""
         return self.indices.shape[0]
 
     def _expand(self, new_capacity: int):
@@ -229,6 +274,7 @@ class SparsePauliSumArray:
         self.coeffs = np.concatenate([self.coeffs, np.empty(addition, dtype=np.complex128)])
 
     def append(self, pauli_sum: SparsePauliSum):
+        """Append a new SparsePauliSum."""
         if self.num_qubits is None:
             self.num_qubits = pauli_sum.num_qubits
         elif pauli_sum.num_qubits != self.num_qubits:
@@ -242,6 +288,7 @@ class SparsePauliSumArray:
         self.coeffs[self.ptrs[-2]:self.ptrs[-1]] = pauli_sum.coeffs
 
     def normalize(self) -> 'SparsePauliSumArray':
+        """Return a new array with normalized elements."""
         normalized = SparsePauliSumArray(initial_capacity=self.capacity)
         normalized.num_qubits = self.num_qubits
         normalized.indices = self.indices.copy()
@@ -270,11 +317,13 @@ class SparsePauliSumArray:
         )
 
     def to_csr(self) -> csr_array:
+        """Convert to an array of Pauli vectors in the CSR format."""
         return csr_array((self.coeffs, self.indices, self.ptrs),
                          shape=(len(self), self.vlen))
 
     @staticmethod
     def from_csr(matrix: csr_array) -> 'SparsePauliSumArray':
+        """Convert from an array of Pauli vectors in the CSR format."""
         array = SparsePauliSumArray(initial_capacity=matrix.data.shape[0])
         array.num_qubits = int(np.round(np.emath.logn(4, matrix.shape[1])))
         array.indices = matrix.indices
@@ -283,6 +332,7 @@ class SparsePauliSumArray:
         return array
 
     def to_matrices(self, *, sparse: bool = False, npmod=np) -> np.ndarray:
+        """Convert to an array of dense matrices."""
         matrices = npmod.empty((len(self), 2 ** self.num_qubits, 2 ** self.num_qubits),
                                dtype=np.complex128)
         for ielem, elem in enumerate(self):
@@ -295,7 +345,7 @@ def _uniquify(
     coeffs: np.ndarray,
     normalize: bool
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Uniquify a pauli list by summing up the cofficients of overlapping operators."""
+    """Uniquify a Pauli list by summing up the cofficients of overlapping operators."""
     indices_uniq, unique_indices = np.unique(indices, return_inverse=True)
     if indices_uniq.shape[0] == indices.shape[0]:
         # indices is already unique
@@ -317,7 +367,7 @@ def _uniquify(
 
 
 def sps_add(*ops, normalize: bool = False) -> SparsePauliSum:
-    """Sum of sparse Pauli ops."""
+    """Sum of SparsePauliSums."""
     indices, coeffs = _uniquify(
         np.concatenate([op.indices for op in ops]),
         np.concatenate([op.coeffs for op in ops]),
@@ -331,7 +381,7 @@ def sps_matmul(
     o2: SparsePauliSum,
     normalize: bool = False
 ) -> SparsePauliSum:
-    """Product of two sparse Pauli ops."""
+    """Product of two SparsePauliSums."""
     if (num_qubits := o1.num_qubits) != o2.num_qubits:
         raise ValueError('Matmul between incompatible SparsePauliSums')
 
@@ -354,6 +404,7 @@ def sps_commutator(
     o2: SparsePauliSum,
     normalize: bool = False
 ) -> SparsePauliSum:
+    """Commutator between two SparsePauliSums."""
     o1h = o1.hpart
     o1a = o1.apart
     o2h = o2.hpart
@@ -369,5 +420,6 @@ def sps_commutator(
 
 
 def sps_dot(o1: SparsePauliSum, o2: SparsePauliSum) -> complex:
+    """Inner product between two SparsePauliSums."""
     common_entries = np.nonzero(o1.indices[:, None] - o2.indices[None, :] == 0)
     return np.sum(o1.coeffs[common_entries[0]].conjugate() * o2.coeffs[common_entries[1]])
