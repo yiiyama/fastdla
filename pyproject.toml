@@ -26,3 +26,4 @@ dependencies = [
 [project.urls]
 Homepage = "https://github.com/yiiyama/fastdla"
 Issues = "https://github.com/yiiyama/fastdla/issues"
+Documentation = "https://fastdla.readthedocs.io/en/latest/index.html"
