@@ -1,3 +1,4 @@
+# pylint: disable=unused-argument
 """Implementation of the Lie closure generator using JAX matrices."""
 from collections.abc import Callable, Sequence
 from functools import partial
@@ -43,8 +44,19 @@ def _commutator_from_basis(idx1: int, idx2: int, basis: Array) -> Array:
 
 
 @jax.jit
-def _commutator_from_aux(idx1: int, idx2: int, _: Array, aux: Array) -> Array:
-    return _commutator_norm(aux[idx1], aux[idx2])
+def _commutator_from_commlist(idx1: int, idx2: int, _: Array, commlist: Array) -> Array:
+    return _commutator_norm(commlist[idx1], commlist[idx2])
+
+
+@jax.jit
+def _commutator_from_basis_2aux(
+    idx1: int,
+    idx2: int,
+    basis: Array,
+    aux1: Array,
+    aux2: Array
+) -> Array:
+    return _commutator_from_basis(idx1, idx2, basis)
 
 
 @jax.jit
@@ -179,7 +191,7 @@ def _main_loop_body(
     def _continue(_, _basis, _basis_size, *_aux):
         return _basis, _basis_size, *_aux
 
-    idx1, idx2, basis, basis_size, aux = val
+    idx1, idx2, basis, basis_size, *aux = val
 
     if log_level <= logging.INFO:
         icomm = (idx1 * (idx1 + 1)) // 2 + idx2
@@ -202,13 +214,13 @@ def _main_loop_body(
         comm, basis, basis_size, *aux
     )
     # Compute the next indices
-    next_idx1, next_idx2 = jax.lax.cond(
+    idx1, idx2 = jax.lax.cond(
         jnp.equal(idx2 + 1, idx1),
         lambda: (idx1 + 1, 0),
         lambda: (idx1, idx2 + 1)
     )
 
-    return next_idx1, next_idx2, basis, basis_size, *aux
+    return idx1, idx2, basis, basis_size, *aux
 
 
 @jax.jit
@@ -286,12 +298,17 @@ def lie_closure(
             before a full closure is obtained.
         algorithm: Choice of linear-independence check method. In general there is no need for
             values other than 'default'; this feature was used for demonstrations in
-            arXiv:2506.01120.
+            arXiv:2506.01120. Options: 'default', 'keep_original', 'matrix_inversion', 'svd'.
+            Algorithm='keep_original' is equivalent to 'default' with keep_original=True.
 
     Returns:
         A list of linearly independent nested commutators and the orthonormal basis if
         keep_original=True, otherwise only the orthonormal basis.
     """
+    if algorithm == 'keep_original':
+        algorithm = 'default'
+        keep_original = True
+
     if keep_original and algorithm != 'default':
         raise ValueError('keep_original=True is only valid for default algorithm')
 
@@ -315,13 +332,14 @@ def lie_closure(
         updater = _if_fullrank_update
     elif algorithm == 'matrix_inversion':
         updater = _if_independent_update
+        commutator = _commutator_from_basis_2aux
         resizer = _resize_basis_and_x
         xmat = jnp.eye(max_size, dtype=np.complex128)
         xinv = xmat
         aux = [xmat, xinv]
     elif keep_original:
         updater = _if_orthogonal_update_suppl
-        commutator = _commutator_from_basis
+        commutator = _commutator_from_commlist
         resizer = _resize_basis_and_commlist
         aux = [jnp.array(basis)]
     else:
@@ -332,7 +350,7 @@ def lie_closure(
         basis, basis_size, *aux = updater(op, basis, basis_size, *aux)
 
     main_loop_body = partial(_main_loop_body,
-                             keep_original=keep_original, log_level=LOG.getEffectiveLevel(),
+                             log_level=LOG.getEffectiveLevel(),
                              commutator=commutator, updater=updater)
 
     if basis_size >= max_dim:
