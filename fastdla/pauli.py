@@ -166,13 +166,13 @@ class PauliProduct:
             data = npmod.outer(PAULI_SPARSE_DATA[ip], data).reshape(-1)
         dim = 2 ** self.num_qubits
         indptr = npmod.arange(dim + 1)
+        csr = csr_array((data, cols, indptr), shape=(dim, dim))
         if npmod is np:
-            return csr_array((data, cols, indptr), shape=(dim, dim))
+            return csr
 
         import jax.numpy as jnp
         from jax.experimental.sparse import BCSR
         if npmod is jnp:
-            return BCSR((data, cols, indptr), shape=(dim, dim), indices_sorted=True,
-                        unique_indices=True)
+            return BCSR.from_scipy_sparse(csr)
 
         raise NotImplementedError(f'npmod {npmod} is not supported')
