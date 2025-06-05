@@ -153,7 +153,7 @@ def _update_loop(
 
     num_results = len(result_indices)
     for ires in range(num_results):
-        if log_level <= logging.INFO and ires % 500 == 0:
+        if log_level <= logging.INFO and ires % 2000 == 0:
             la_dim = len(basis_ptrs) - 1
             ilhs, irhs = result_isource[ires]
             with objmode():
