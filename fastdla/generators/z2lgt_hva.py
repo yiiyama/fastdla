@@ -377,21 +377,7 @@ def z2lgt_dense_gauss_eigenspace(
             eigvals, eigvecs = npmod.linalg.eigh(local_projector)
             indices = npmod.nonzero(npmod.isclose(eigvals, 1.), **nonzero_kwargs)[0]
             basis = eigvecs[:, indices].T.conjugate()
-        elif isite_r == num_sites - 1:
-            # Transpose the rightmost X to position 0 simultaneously with matrix multiplication
-            pdim = basis.shape[0]
-            basis = basis.reshape((pdim, 2, 2 ** (2 * num_sites - 3), 2))
-            local_projector = local_projector.reshape((2, 2, 2, 2, 2, 2))
-            projected_local = npmod.einsum('ijkl,lmjnop,qpkn->imqo', basis, local_projector,
-                                           basis.conjugate())  # (pdim, 2, pdim, 2)
-            projected_local = projected_local.reshape((pdim * 2,) * 2)
-            eigvals, eigvecs = npmod.linalg.eigh(projected_local)
-            indices = npmod.nonzero(npmod.isclose(eigvals, 1.), **nonzero_kwargs)[0]
-            subspace = eigvecs[:, indices].T.conjugate().reshape(-1, pdim, 2)
-            basis = basis.reshape(pdim, 2 ** (2 * num_sites - 1))
-            basis = npmod.einsum('ijk,jl->ilk', subspace, basis)
-            basis = basis.reshape(-1, 2 ** (2 * num_sites))
-        else:
+        elif isite_r < num_sites - 1:
             pdim = basis.shape[0]
             basis = basis.reshape((pdim, 2 ** (2 * isite_r), 2))
             local_projector = local_projector.reshape((2, 4, 2, 4))
@@ -399,10 +385,24 @@ def z2lgt_dense_gauss_eigenspace(
                                            basis.conjugate())  # (pdim, 4, pdim, 4)
             projected_local = projected_local.reshape((pdim * 4,) * 2)
             eigvals, eigvecs = npmod.linalg.eigh(projected_local)
-            subspace = eigvecs.T.conjugate().reshape(-1, pdim, 4)
+            indices = npmod.nonzero(npmod.isclose(eigvals, 1.), **nonzero_kwargs)[0]
+            subspace = eigvecs[:, indices].T.conjugate().reshape(-1, pdim, 4)
             basis = basis.reshape(pdim, 2 ** (2 * isite_r + 1))
             basis = npmod.einsum('ijk,jl->ilk', subspace, basis)
             basis = basis.reshape(-1, 2 ** (2 * isite_r + 3))
+        else:
+            # Transpose the rightmost X to position 0 simultaneously with matrix multiplication
+            pdim = basis.shape[0]
+            basis = basis.reshape((pdim, 2, 2 ** (2 * num_sites - 3), 2))
+            local_projector = local_projector.reshape((2, 2, 2, 2, 2, 2))
+            projected_local = npmod.einsum('ijkl,lmjnop,qpkn->imqo', basis, local_projector,
+                                           basis.conjugate())  # (pdim, 2, pdim, 2)
+            projected_local = projected_local.reshape((pdim * 2,) * 2)
+            _, eigvecs = npmod.linalg.eigh(projected_local)
+            subspace = eigvecs.T.conjugate().reshape(-1, pdim, 2)
+            basis = basis.reshape(pdim, 2 ** (2 * num_sites - 1))
+            basis = npmod.einsum('ijk,jl->ilk', subspace, basis)
+            basis = basis.reshape(-1, 2 ** (2 * num_sites))
 
     return basis.conjugate().T
 
