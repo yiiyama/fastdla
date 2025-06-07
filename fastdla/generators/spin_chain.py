@@ -1,6 +1,12 @@
 """Symmetry operations common to 1D spin-chain models."""
 from typing import Optional
 import numpy as np
+try:
+    import jax.numpy as jnp
+except ImportError:
+    jnp = None
+else:
+    import jax
 from ..eigenspace import LinearOpFunction, get_eigenspace
 
 
@@ -24,6 +30,9 @@ def magnetization_projection(
             projected = basis.at[target_states].set(0.)
         return projected
 
+    if npmod is jnp:
+        op = jax.jit(op)
+
     return op
 
 
@@ -40,7 +49,8 @@ def magnetization_eigenspace(
 
 
 def parity_reflection(
-    num_spins: int
+    num_spins: int,
+    npmod=np
 ) -> tuple[LinearOpFunction, int]:
     """Return a function that applies a parity reflection to states."""
     if num_spins % 2:
@@ -51,6 +61,9 @@ def parity_reflection(
         basis = basis.transpose(tuple(range(num_spins - 1, -1, -1)) + (num_spins,))
         basis = basis.reshape((2 ** num_spins, -1))
         return basis
+
+    if npmod is jnp:
+        op = jax.jit(op)
 
     return op
 
@@ -68,7 +81,7 @@ def parity_eigenspace(
     if num_spins is None:
         num_spins = np.round(np.log2(basis.shape[0])).astype(int)
 
-    op = parity_reflection(num_spins)
+    op = parity_reflection(num_spins, npmod=npmod)
     return get_eigenspace((op, parity), basis, dim=2 ** num_spins, npmod=npmod)
 
 
@@ -97,6 +110,9 @@ def translation(
         translated = npmod.moveaxis(translated, src, dest)
         translated = translated.reshape((2 ** num_spins, -1))
         return translated
+
+    if npmod is jnp:
+        op = jax.jit(op)
 
     return op
 
@@ -131,7 +147,7 @@ def translation_eigenspace(
     return get_eigenspace((op, eigval), basis, dim=2 ** num_spins, npmod=npmod)
 
 
-def spin_flip() -> LinearOpFunction:
+def spin_flip(npmod=np) -> LinearOpFunction:
     r"""Return a function that applies a global spin flip :math:`\Pi_{\mathbb{Z}_2}`.
 
     Args:
@@ -145,6 +161,9 @@ def spin_flip() -> LinearOpFunction:
         # Spin flip of a state vector actually corresponds to a simple order reverse
         # [0000, 0001, 0010, ...] <-> [1111, 1110, 1101, ...]
         return basis[::-1, ...]
+
+    if npmod is jnp:
+        op = jax.jit(op)
 
     return op
 
@@ -171,5 +190,5 @@ def spin_flip_eigenspace(
     if abs(eigval) != 1:
         raise ValueError('Invalid eigenvalue')
 
-    op = spin_flip()
+    op = spin_flip(npmod=npmod)
     return get_eigenspace((op, eigval), basis, dim=2 ** num_spins, npmod=npmod)
