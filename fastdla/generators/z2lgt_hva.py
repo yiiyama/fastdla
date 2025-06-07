@@ -1,7 +1,10 @@
 """Generators and symmetry projectors for Z2 lattice gauge theory HVA."""
 from collections.abc import Sequence
 from typing import Optional
+from functools import partial
 import numpy as np
+import jax
+import jax.numpy as jnp
 from ..pauli import PAULIS
 from ..sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
 from .spin_chain import translation, translation_eigenspace
@@ -365,9 +368,14 @@ def z2lgt_dense_gauss_eigenspace(
             coeffs = [0.5, -0.5]
 
         local_projector = SparsePauliSum(['III', 'XZX'], coeffs).to_matrix()
+        if npmod is np:
+            nonzero_kwargs = {}
+        else:
+            nonzero_kwargs = {'size': 2 ** (isite_r + 2)}
+
         if isite_r == 0:
             eigvals, eigvecs = npmod.linalg.eigh(local_projector)
-            indices = npmod.nonzero(npmod.isclose(eigvals, 1.))[0]
+            indices = npmod.nonzero(npmod.isclose(eigvals, 1.), **nonzero_kwargs)[0]
             basis = eigvecs[:, indices].T.conjugate()
         elif isite_r == num_sites - 1:
             # Transpose the rightmost X to position 0 simultaneously with matrix multiplication
@@ -378,7 +386,7 @@ def z2lgt_dense_gauss_eigenspace(
                                            basis.conjugate())  # (pdim, 2, pdim, 2)
             projected_local = projected_local.reshape((pdim * 2,) * 2)
             eigvals, eigvecs = npmod.linalg.eigh(projected_local)
-            indices = npmod.nonzero(npmod.isclose(eigvals, 1.))[0]
+            indices = npmod.nonzero(npmod.isclose(eigvals, 1.), **nonzero_kwargs)[0]
             subspace = eigvecs[:, indices].T.conjugate().reshape(-1, pdim, 2)
             basis = basis.reshape(pdim, 2 ** (2 * num_sites - 1))
             basis = npmod.einsum('ijk,jl->ilk', subspace, basis)
@@ -391,13 +399,21 @@ def z2lgt_dense_gauss_eigenspace(
                                            basis.conjugate())  # (pdim, 4, pdim, 4)
             projected_local = projected_local.reshape((pdim * 4,) * 2)
             eigvals, eigvecs = npmod.linalg.eigh(projected_local)
-            indices = npmod.nonzero(npmod.isclose(eigvals, 1.))[0]
-            subspace = eigvecs[:, indices].T.conjugate().reshape(-1, pdim, 4)
+            subspace = eigvecs.T.conjugate().reshape(-1, pdim, 4)
             basis = basis.reshape(pdim, 2 ** (2 * isite_r + 1))
             basis = npmod.einsum('ijk,jl->ilk', subspace, basis)
             basis = basis.reshape(-1, 2 ** (2 * isite_r + 3))
 
     return basis.conjugate().T
+
+
+# pylint: disable-next=invalid-name
+_z2lgt_jnp_gauss_eigenspace = jax.jit(partial(z2lgt_dense_gauss_eigenspace, npmod=jnp),
+                                      static_argnums=[0])
+
+
+def z2lgt_jnp_gauss_eigenspace(eigvals):
+    return _z2lgt_jnp_gauss_eigenspace(tuple(eigvals))  # pylint: disable=not-callable
 
 
 def z2lgt_dense_u1_projection(
@@ -455,6 +471,9 @@ def z2lgt_dense_u1_projection(
                                      tuple(range(1, num_qubits, 2)))
         transformed = npmod.reshape(transformed, (2 ** num_qubits, -1))
         return transformed
+
+    if npmod is jnp:
+        op = jax.jit(op)
 
     return op
 
