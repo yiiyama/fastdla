@@ -455,13 +455,15 @@ def z2lgt_dense_u1_projection(
 
     def op(basis):
         """Return the singular matrix."""
-        transformed = npmod.array(basis).reshape((2,) * num_qubits + (-1,))
+        transformed = npmod.asarray(basis)
+        transformed = transformed.reshape((2,) * num_qubits + (-1,))
         # Move the site axes to the front and reserialize
         transformed = npmod.moveaxis(transformed, tuple(range(1, num_qubits, 2)),
                                      tuple(range(num_sites)))
         transformed = npmod.reshape(transformed, (2 ** num_sites, -1))
         # Project out states with charge configurations giving the target total charge
         if npmod is np:
+            transformed = np.array(transformed)
             transformed[target_charge_states] = 0.
         else:
             transformed = transformed.at[target_charge_states].set(0.)

@@ -104,7 +104,7 @@ def translation(
 
     def op(basis):
         """Translate the states in the basis."""
-        translated = npmod.array(basis).reshape((2,) * num_spins + (-1,))
+        translated = basis.reshape((2,) * num_spins + (-1,))
         src = np.arange(num_spins)
         dest = np.roll(np.arange(num_spins), -shift)
         translated = npmod.moveaxis(translated, src, dest)
