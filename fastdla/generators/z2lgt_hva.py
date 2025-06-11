@@ -11,7 +11,7 @@ from .spin_chain import translation, translation_eigenspace
 from ..eigenspace import LinearOpFunction, get_eigenspace
 
 
-def z2lgt_hva_generators(num_fermions: int) -> SparsePauliSumArray:
+def z2lgt_hva_generators(num_fermions: int, gauge_op: str = 'X') -> SparsePauliSumArray:
     r"""Construct the generators of the HVA for the 1+1-dimensional Z2 Lattice gauge theory model
     with periodic boundary condition.
 
@@ -78,7 +78,8 @@ def z2lgt_hva_generators(num_fermions: int) -> SparsePauliSumArray:
     generators = SparsePauliSumArray(num_qubits=num_qubits)
 
     # Field term H_g
-    strings = ['I' * (num_qubits - iq - 1) + 'X' + 'I' * iq for iq in range(1, num_qubits, 2)]
+    strings = ['I' * (num_qubits - iq - 1) + gauge_op + 'I' * iq
+               for iq in range(1, num_qubits, 2)]
     coeffs = np.ones(len(strings)) / np.sqrt(len(strings))
     generators.append(SparsePauliSum(strings, coeffs))
 
@@ -90,13 +91,14 @@ def z2lgt_hva_generators(num_fermions: int) -> SparsePauliSumArray:
         generators.append(SparsePauliSum(strings, coeffs))
 
     # Hopping terms H_h (even and odd)
+    link_op = 'Z' if gauge_op == 'X' else 'X'
     for parity in [0, 1]:
         strings = []
         for isite in range(parity, 2 * num_fermions, 2):
             for site_op in ['X', 'Y']:
                 paulis_reverse = ['I'] * num_qubits
                 paulis_reverse[isite * 2] = site_op
-                paulis_reverse[isite * 2 + 1] = 'Z'
+                paulis_reverse[isite * 2 + 1] = link_op
                 paulis_reverse[(isite * 2 + 2) % num_qubits] = site_op
                 strings.append(''.join(paulis_reverse[::-1]))
         coeffs = np.ones(len(strings)) / np.sqrt(len(strings))
@@ -108,7 +110,8 @@ def z2lgt_hva_generators(num_fermions: int) -> SparsePauliSumArray:
 def z2lgt_gauss_local_projector(
     num_fermions: int,
     isite: int,
-    eigval: int
+    eigval: int,
+    gauge_op: str = 'X'
 ) -> SparsePauliSum:
     r"""Construct the Gauss's law projector for the Z2 LGT model for a single matter site.
 
@@ -153,14 +156,14 @@ def z2lgt_gauss_local_projector(
     strings = ['I' * num_qubits]
     paulis_reverse = ['I'] * num_qubits
     paulis_reverse[isite * 2] = 'Z'
-    paulis_reverse[(isite * 2 - 1) % num_qubits] = 'X'
-    paulis_reverse[(isite * 2 + 1) % num_qubits] = 'X'
+    paulis_reverse[(isite * 2 - 1) % num_qubits] = gauge_op
+    paulis_reverse[(isite * 2 + 1) % num_qubits] = gauge_op
     strings.append(''.join(paulis_reverse[::-1]))
 
     return SparsePauliSum(strings, coeffs)
 
 
-def z2lgt_gauss_projector(eigvals: Sequence[int]) -> SparsePauliSum:
+def z2lgt_gauss_projector(eigvals: Sequence[int], gauge_op: str = 'X') -> SparsePauliSum:
     r"""Construct the Gauss's law projector for the Z2 LGT model.
 
     Physical states of the Z2 LGT model must be eigenstates of
@@ -180,7 +183,8 @@ def z2lgt_gauss_projector(eigvals: Sequence[int]) -> SparsePauliSum:
 
     projector = SparsePauliSum('I' * num_qubits, 1.)
     for isite, ev in enumerate(eigvals):
-        projector = projector @ z2lgt_gauss_local_projector(num_fermions, isite, ev)
+        projector = projector @ z2lgt_gauss_local_projector(num_fermions, isite, ev,
+                                                            gauge_op=gauge_op)
 
     return projector
 
@@ -292,6 +296,7 @@ def z2lgt_symmetry_eigenspace(
     gauss_eigvals: Sequence[int],
     u1_total_charge: Optional[int] = None,
     t_jphase: Optional[int] = None,
+    gauge_op: str = 'X',
     npmod=np
 ) -> np.ndarray:
     """Construct a full symmetry projector for the Z2 LGT model.
@@ -301,7 +306,7 @@ def z2lgt_symmetry_eigenspace(
 
     Returns a (pu, 2**nq) matrix.
     """
-    basis = z2lgt_dense_gauss_eigenspace(gauss_eigvals, npmod=npmod)
+    basis = z2lgt_dense_gauss_eigenspace(gauss_eigvals, gauge_op=gauge_op, npmod=npmod)
     if u1_total_charge is not None:
         basis = z2lgt_dense_u1_eigenspace(u1_total_charge, basis, npmod=npmod)
     if t_jphase is not None:
@@ -312,6 +317,7 @@ def z2lgt_symmetry_eigenspace(
 
 def z2lgt_dense_gauss_eigenspace(
     gauss_eigvals: Sequence[int],
+    gauge_op: str = 'X',
     npmod=np
 ) -> np.ndarray:
     r"""Get the eigenspace basis of Gauss's law operators.
@@ -322,29 +328,38 @@ def z2lgt_dense_gauss_eigenspace(
 
     **Algorithm:**
 
-    Let the number of matter sites be :math:`M`, qubits be counted from right to left, and qubit 0
+    Let the number of matter sites be :math:`M`, qubits be indexed from right to left, and qubit 0
     correspond to matter site 0.
 
-    Start with a local projector :math:`Q(0)` for the left-most (:math:`M-1`) XZX symmetry
-    generator. Obtain a projector :math:`P(0)=Q(0)` with shape ``(p(0), d(0)=8)``.
+    Start by finding the eigenspace of the left-most (:math:`M-1`) Gauss law operator
+    :math:`X_{M-2,M-1}Z_{M-1}X_{M-1,0}` corresponding to `gauss_eigvals[-1]`. Construct a projector
+    :math:`P(M-1)` with shape :math:`[d(M-1)=8, p(M-1)=4]`.
 
-    For a quark site :math:`M-i-1 \; (i=1,...,M-2)`, extend the dimensions of the current projector
-    :math:`P(i-1)` by 4 to the right, then project the local :math:`Q(i)` to
+    For a matter site :math:`M-j-1 \; (j=1,...,M-2)`, extend the dimensions of the current projector
+    :math:`P(M-j)` to :math:`4d(M-j)`, then project the Gauss law operator onto the subspace to
+    obtain
 
     .. math::
 
-        R(i) = [P(i-1) \otimes I \otimes I] [I \otimes \cdots \otimes I \otimes Q(i)]
-               [P(i-1)^{\dagger} \otimes I \otimes I]
+        R(M-j-1) = [I \otimes I \otimes P(M-j)^{\dagger}] [X_{M-j-2,M-j-1}Z_{M-j-1}X_{M-j-1,M-j}
+                                                           \otimes I^{\otimes 2j}]
+                   [I \otimes I \otimes P(M-j)]
 
-    (shape ``(p(i-1)x4, p(i-1)x4)``). Assemble the eigenvectors of :math:`R(i)` with eigenvalue 1
-    into :math:`S(i)=(v_0..v_{p(i)})` (shape (p(i-1)x4, p(i))) and apply :math:`S(i)^{\dagger}` to
-    the current projector to obtain :math:`P(i)=S(i)^{\dagger}[P(i-1) \otimes I \otimes I]` (shape
-    ``(p(i), d(i)=d(i-1)x4)``).
+    (shape :math:`[4p(M-j), 4p(M-j)]`). Assemble the eigenvectors of :math:`R(M-j-1)` with
+    eigenvalue `gauss_eigvals[M-j-1]` into :math:`S(M-j-1)=(v_0 \; \dots \; v_{2p(M-j)-1})`. The
+    current projector :math:`I \otimes I \otimes P(M-j)` projected onto :math:`S(M-j-1)` is the next
+    projector
 
-    For quark site 0 (:math:`i=M-1`), extend the dimension of :math:`P(M-2)` only by 2. The "local"
-    projector actually acts on the leftmost qubit as well as the rightmost two. :math:`R(M-1)` and
-    :math:`S(M-1)` have shapes ``(p(M-2)x2, p(M-2)x2)`` and ``(p(M-2)x2, p(M-1))`` and the final
-    projector will be ``(p(M-1), d(M-1)=d(M-2)x2=2**nq)``.
+    .. math::
+
+        P(M-j-1) = [I \otimes I \otimes P(M-j)] S(M-j-1)
+
+    (shape :math:`[d(M-j-1)=4d(M-j), p(M-j-1)=2p(M-j)]`).
+
+    For the matter site 0, extend the dimension of :math:`P(1)` only by 2. The "local" projector
+    actually acts on the leftmost qubit as well as the rightmost two. :math:`R(0)` and
+    :math:`S(0)` have shapes :math:`[2p(1), 2p(1)]` and :math:`[2p(1), p(1)]` and the final
+    projector will be :math:`[d(0)=2d(1)=2^{2M}, p(0)=p(1)=2^M]`.
 
     Args:
         gauss_eigvals: Sequence (length :math:`2N_f`) of eigenvalues (±1) of :math:`G_n`.
@@ -357,63 +372,64 @@ def z2lgt_dense_gauss_eigenspace(
         raise ValueError('There must be an even number of charges with values +-1')
 
     num_sites = len(gauss_eigvals)
-    basis = npmod.array(0.)
+
+    if gauge_op == 'X':
+        pauliz = np.diagflat([1.+0.j, -1.+0.j])
+        paulix = np.array([[0., 1.+0.j], [1.+0.j, 0.]])
+        gauss_op = np.kron(paulix, np.kron(pauliz, paulix))
+    else:
+        zdiag = np.array([1.+0.j, -1.+0.j])
+        gauss_op = np.diagflat(np.kron(zdiag, np.kron(zdiag, zdiag)))
 
     # Gauss's law projector
     # Start from the leftmost link-site-link and iteratively construct the full-size projector
     for isite_r, ev in enumerate(gauss_eigvals[::-1]):
-        if ev > 0:
-            coeffs = [0.5, 0.5]
-        else:
-            coeffs = [0.5, -0.5]
-
-        local_projector = SparsePauliSum(['III', 'XZX'], coeffs).to_matrix()
-        if npmod is np:
-            nonzero_kwargs = {}
-        else:
-            nonzero_kwargs = {'size': 2 ** (isite_r + 2)}
+        previous_d = 2 ** (2 * isite_r + 1)
+        previous_p = 2 ** (isite_r + 1)
 
         if isite_r == 0:
-            eigvals, eigvecs = npmod.linalg.eigh(local_projector)
-            indices = npmod.nonzero(npmod.isclose(eigvals, 1.), **nonzero_kwargs)[0]
-            basis = eigvecs[:, indices].T.conjugate()
+            eigvals, eigvecs = np.linalg.eigh(gauss_op)
+            basis = eigvecs[:, np.isclose(eigvals, ev)]
         elif isite_r < num_sites - 1:
-            pdim = basis.shape[0]
-            basis = basis.reshape((pdim, 2 ** (2 * isite_r), 2))
-            local_projector = local_projector.reshape((2, 4, 2, 4))
-            projected_local = npmod.einsum('ijk,klmn,ojm->ilon', basis, local_projector,
-                                           basis.conjugate())  # (pdim, 4, pdim, 4)
-            projected_local = projected_local.reshape((pdim * 4,) * 2)
-            eigvals, eigvecs = npmod.linalg.eigh(projected_local)
-            indices = npmod.nonzero(npmod.isclose(eigvals, 1.), **nonzero_kwargs)[0]
-            subspace = eigvecs[:, indices].T.conjugate().reshape(-1, pdim, 4)
-            basis = basis.reshape(pdim, 2 ** (2 * isite_r + 1))
-            basis = npmod.einsum('ijk,jl->ilk', subspace, basis)
-            basis = basis.reshape(-1, 2 ** (2 * isite_r + 3))
+            # Reshape and einsum instead of expanding the dimension of the projector and then
+            # performing the matrix multiplication
+            # [P(M-j)†⊗I⊗I] [I..I⊗XZX] [P(M-j)⊗I⊗I] (reverse order wrt the docstring)
+            proj = basis.reshape((2 ** (2 * isite_r), 2, previous_p))
+            projected_gauss = npmod.einsum('ijk,jlmn,imo->klon',
+                                           proj.conjugate(),
+                                           gauss_op.reshape((2, 4, 2, 4)),
+                                           proj).reshape((previous_p * 4,) * 2)
+            eigvals, eigvecs = npmod.linalg.eigh(projected_gauss)
+            kwargs = {} if npmod is np else {'size': previous_p * 2}
+            indices = npmod.nonzero(npmod.isclose(eigvals, ev), **kwargs)[0]
+            subspace = eigvecs[:, indices].reshape(previous_p, 4, previous_p * 2)
+            basis = npmod.einsum('ij,jkl->ikl', basis, subspace).reshape(previous_d * 4,
+                                                                         previous_p * 2)
         else:
             # Transpose the rightmost X to position 0 simultaneously with matrix multiplication
-            pdim = basis.shape[0]
-            basis = basis.reshape((pdim, 2, 2 ** (2 * num_sites - 3), 2))
-            local_projector = local_projector.reshape((2, 2, 2, 2, 2, 2))
-            projected_local = npmod.einsum('ijkl,lmjnop,qpkn->imqo', basis, local_projector,
-                                           basis.conjugate())  # (pdim, 2, pdim, 2)
-            projected_local = projected_local.reshape((pdim * 2,) * 2)
-            _, eigvecs = npmod.linalg.eigh(projected_local)
-            subspace = eigvecs.T.conjugate().reshape(-1, pdim, 2)
-            basis = basis.reshape(pdim, 2 ** (2 * num_sites - 1))
-            basis = npmod.einsum('ijk,jl->ilk', subspace, basis)
-            basis = basis.reshape(-1, 2 ** (2 * num_sites))
+            # [P(M-j)†⊗I] [X⊗I..I⊗XZ] [P(M-j)⊗I] (reverse order wrt the docstring)
+            proj = basis.reshape((2, 2 ** (2 * isite_r - 1), 2, previous_p))
+            projected_gauss = npmod.einsum('ijkl,kminop,pjnq->lmqo',
+                                           proj.conjugate(),
+                                           gauss_op.reshape((2,) * 6),
+                                           proj).reshape((previous_p * 2,) * 2)
+            eigvals, eigvecs = npmod.linalg.eigh(projected_gauss)
+            kwargs = {} if npmod is np else {'size': previous_p}
+            indices = npmod.nonzero(npmod.isclose(eigvals, ev), **kwargs)[0]
+            subspace = eigvecs[:, indices].reshape(previous_p, 2, previous_p)
+            basis = npmod.einsum('ij,jkl->ikl', basis, subspace).reshape(previous_d * 2, previous_p)
 
-    return basis.conjugate().T
+    return basis
 
 
 # pylint: disable-next=invalid-name
 _z2lgt_jnp_gauss_eigenspace = jax.jit(partial(z2lgt_dense_gauss_eigenspace, npmod=jnp),
-                                      static_argnums=[0])
+                                      static_argnums=[0], static_argnames=['gauge_op'])
 
 
-def z2lgt_jnp_gauss_eigenspace(eigvals):
-    return _z2lgt_jnp_gauss_eigenspace(tuple(eigvals))  # pylint: disable=not-callable
+def z2lgt_jnp_gauss_eigenspace(eigvals, gauge_op='X'):
+    # pylint: disable-next=not-callable
+    return _z2lgt_jnp_gauss_eigenspace(tuple(eigvals), gauge_op=gauge_op)
 
 
 def z2lgt_dense_u1_projection(
