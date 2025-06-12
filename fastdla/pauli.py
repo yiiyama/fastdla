@@ -3,6 +3,13 @@ from collections.abc import Sequence
 from typing import Optional
 import numpy as np
 from scipy.sparse import csr_array
+try:
+    import jax
+    import jax.numpy as jnp
+    from jax.experimental.sparse import BCSR
+except ImportError:
+    jax = None
+    jnp = None
 
 
 PAULI_NAMES = ['I', 'X', 'Y', 'Z']
@@ -152,13 +159,15 @@ class PauliProduct:
         if sparse:
             return self._to_sparse_matrix(npmod)
 
+        if npmod is jnp:
+            return _pauli_to_matrix_jnp(self.indices())
+
         matrix = np.array(1.)
         for ip in self.indices():
             matrix = np.kron(PAULIS[ip], matrix)
         return matrix
 
     def _to_sparse_matrix(self, npmod) -> csr_array:
-        # pylint: disable=import-outside-toplevel
         cols = npmod.array(0)
         data = npmod.array(1.)
         for iq, ip in enumerate(self.indices()):
@@ -169,10 +178,17 @@ class PauliProduct:
         csr = csr_array((data, cols, indptr), shape=(dim, dim))
         if npmod is np:
             return csr
-
-        import jax.numpy as jnp
-        from jax.experimental.sparse import BCSR
         if npmod is jnp:
             return BCSR.from_scipy_sparse(csr)
 
         raise NotImplementedError(f'npmod {npmod} is not supported')
+
+
+if jnp:
+    @jax.jit
+    def _pauli_to_matrix_jnp(pindices):
+        paulis = jnp.array(PAULIS)
+        matrix = jnp.array(1.)
+        for ip in pindices:
+            matrix = jnp.kron(paulis[ip], matrix)
+        return matrix

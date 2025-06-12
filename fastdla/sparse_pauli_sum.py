@@ -199,19 +199,14 @@ class SparsePauliSum:
         return dense
 
     def to_matrix(self, *, sparse: bool = False, npmod=np) -> np.ndarray | csr_array:
-        # pylint: disable=import-outside-toplevel
         """Convert the Pauli sum to a dense (2**num_qubits, 2**num_qubits) matrix."""
-        matrix = sum(
-            PauliProduct(index, self.num_qubits).to_matrix(sparse=sparse) * coeff
-            for index, coeff in zip(self.indices, self.coeffs)
-        )
-        if not sparse or npmod is np:
-            return matrix
-
-        import jax.numpy as jnp
-        from jax.experimental.sparse import BCSR
-        if npmod is jnp:
-            return BCSR.from_scipy_sparse(matrix)
+        matrix = PauliProduct(self.indices[0],
+                              self.num_qubits).to_matrix(sparse=sparse,
+                                                         npmod=npmod) * self.coeffs[0]
+        for index, coeff in zip(self.indices[1:], self.coeffs[1:]):
+            matrix += PauliProduct(index, self.num_qubits).to_matrix(sparse=sparse,
+                                                                     npmod=npmod) * coeff
+        return matrix
 
 
 class SparsePauliSumArray:
