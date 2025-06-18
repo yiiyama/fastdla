@@ -29,6 +29,7 @@ def inner_product(vec1: np.ndarray, vec2: np.ndarray, npmod=np) -> np.ndarray:
 def orthogonalize(
     vector: np.ndarray,
     basis: np.ndarray,
+    basis_size: Optional[int] = None,
     innerprod: Callable[[np.ndarray, np.ndarray], complex] = inner_product,
     npmod=np
 ) -> np.ndarray:
@@ -42,7 +43,9 @@ def orthogonalize(
     Returns:
         The orthogonal component of the vector.
     """
-    return vector - npmod.tensordot(innerprod(basis, vector), basis, [[0], [0]])
+    if basis_size is not None:
+        basis = basis[:basis_size]
+    return vector - npmod.tensordot(innerprod(basis, vector, npmod=npmod), basis, [[0], [0]])
 
 
 def normalize(
@@ -59,7 +62,7 @@ def normalize(
     Returns:
         Normalized vector and the norm of the original vector.
     """
-    norm = npmod.sqrt(innerprod(vector, vector))
+    norm = npmod.sqrt(innerprod(vector, vector, npmod=npmod).real)
     is_null = npmod.isclose(norm, 0.)
     return npmod.where(is_null, 0., vector) / npmod.where(is_null, 1., norm), norm
 
@@ -67,6 +70,7 @@ def normalize(
 def orthonormalize(
     vector: np.ndarray,
     basis: np.ndarray,
+    basis_size: Optional[int] = None,
     innerprod: Callable[[np.ndarray, np.ndarray], complex] = inner_product,
     npmod=np
 ) -> tuple[bool, np.ndarray, float]:
@@ -85,9 +89,9 @@ def orthonormalize(
         A flag indicating the existence of an orthogonal component, the orthonormalized vector, and
         the norm of the orthogonal component.
     """
-    orth = orthogonalize(vector, basis, innerprod=innerprod, npmod=npmod)
+    orth = orthogonalize(vector, basis, basis_size=basis_size, innerprod=innerprod, npmod=npmod)
     orth, norm = normalize(orth, innerprod=innerprod, npmod=npmod)
-    reorth = orthogonalize(orth, basis, innerprod=innerprod, npmod=npmod)
+    reorth = orthogonalize(orth, basis, basis_size=basis_size, innerprod=innerprod, npmod=npmod)
     reorth, renorm = normalize(reorth, innerprod=innerprod, npmod=npmod)
     return npmod.isclose(renorm, 1.), reorth, norm
 
@@ -99,8 +103,9 @@ def _gram_schmidt_update(
     innerprod: Callable[[np.ndarray, np.ndarray], complex] = inner_product,
     npmod=np
 ) -> tuple[np.ndarray, int | None]:
-
-    has_orth, orth, _ = orthonormalize(vector, basis, innerprod=innerprod, npmod=npmod)
+    """Identify the orthogonal component and update the basis."""
+    has_orth, orth, _ = orthonormalize(vector, basis, basis_size=basis_size, innerprod=innerprod,
+                                       npmod=npmod)
 
     if npmod is np:
         if has_orth:
@@ -127,7 +132,7 @@ def gram_schmidt(
     basis_size: Optional[int] = None,
     innerprod: Callable[[np.ndarray, np.ndarray], complex] = inner_product,
     npmod=np
-) -> np.ndarray:
+) -> np.ndarray | tuple[np.ndarray, int]:
     """Construct an orthonormal basis from an array of vectors through the Gram-Schmidt process.
 
     If the optional basis is given, the function completes this basis with the given vectors.
@@ -145,6 +150,9 @@ def gram_schmidt(
         A full array of orthonormal vectors that span the space that is spanned by the given vectors
         and basis.
     """
+    if len(vectors.shape) != 2:
+        raise NotImplementedError('Gram-Schmidt process for general vectors is not implemented')
+
     start = 0
     if basis is None:
         if vectors.shape[0] == 0:
@@ -157,4 +165,6 @@ def gram_schmidt(
         basis, basis_size = _gram_schmidt_update(vector, basis, basis_size=basis_size,
                                                  innerprod=innerprod, npmod=npmod)
 
-    return basis
+    if basis_size is None:
+        return basis
+    return basis, basis_size
