@@ -81,8 +81,8 @@ def sbd_fast(
 
         while num_identified < dim:
             while evec_idx < dim:
-                has_orth, vec, _ = orthonormalize(eigvecs[:, evec_idx], transform[:num_identified],
-                                                  npmod=npmod)
+                has_orth, vec, _ = orthonormalize(eigvecs[:, evec_idx], transform,
+                                                  basis_size=num_identified, npmod=npmod)
                 evec_idx += 1
                 if has_orth:
                     break
@@ -94,14 +94,14 @@ def sbd_fast(
             if npmod is np:
                 block_basis[0] = vec
             elif npmod is jnp:
-                block_basis.at[0].set(vec)
+                block_basis = block_basis.at[0].set(vec)
             block_basis, basis_size = gram_schmidt(matrices_combined @ vec, basis=block_basis,
                                                    basis_size=1, npmod=npmod)
 
             while True:
-                vrand = npmod.sum(block_basis * normal((block_basis.shape[0], 1)), axis=0)
+                vrand = npmod.sum(block_basis[:basis_size] * normal((basis_size, 1)), axis=0)
                 if matrices.dtype == np.complex128:
-                    vrand += 1.j * npmod.sum(block_basis * normal((block_basis.shape[1], 1)),
+                    vrand += 1.j * npmod.sum(block_basis[:basis_size] * normal((basis_size, 1)),
                                              axis=0)
 
                 current_size = basis_size
