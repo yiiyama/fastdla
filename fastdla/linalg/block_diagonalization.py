@@ -1,4 +1,5 @@
 """Function for simultaneous block diagonalization of matrices."""
+import logging
 import numpy as np
 try:
     import jax.numpy as jnp
@@ -9,13 +10,16 @@ except ImportError:
 
 from .gram_schmidt import gram_schmidt, orthonormalize
 
+LOG = logging.getLogger(__name__)
+
 
 def sbd_fast(
     matrices: np.ndarray,
     hermitian: bool = False,
-    return_blocks: bool = False,
+    krylov_dim: int = 1,
     num_randgen: int = 1,
     seed: int = 0,
+    return_blocks: bool = False,
     npmod=np
 ) -> np.ndarray | tuple[np.ndarray, list[np.ndarray]]:
     r"""Function for simultaneous block diagonalization of matrices.
@@ -35,17 +39,25 @@ def sbd_fast(
         form. If `return_blocks` is True, a list of blocks as arrays of shape :math:`[M, N_j, N_j]`
         is additionally returned, with :math:`N_j` the size of the :math:`j` th block.
     """
-    num_matrices = matrices.shape[0]
+    LOG.debug('Starting sbd_fast')
     dim = matrices.shape[1]
     if hermitian:
         matrices_combined = matrices
         hpart = matrices
     else:
-        matrices_combined = np.concatenate([matrices, matrices.conjugate().transpose((0, 2, 1))],
-                                           axis=0)
-        hpart = matrices_combined[:num_matrices] + matrices_combined[num_matrices:]
+        hcmatrices = matrices.conjugate().transpose((0, 2, 1))
+        matrices_combined = npmod.concatenate([matrices, hcmatrices], axis=0)
+        hpart = matrices + hcmatrices
         if matrices.dtype == np.complex128:
-            apart = 1.j * (matrices_combined[:num_matrices] - matrices_combined[num_matrices:])
+            apart = 1.j * (matrices - hcmatrices)
+
+    num_matrices = matrices_combined.shape[0]
+    for _ in range(1, krylov_dim):
+        raised = npmod.einsum('mij,mjk->mik',
+                              matrices_combined[-num_matrices:], matrices_combined[:num_matrices])
+        matrices_combined = npmod.concatenate([matrices_combined, raised])
+
+    LOG.debug('%d matrices to test (hermitian=%s)', matrices_combined.shape[0], hermitian)
 
     if npmod is np:
         rng = np.random.default_rng(seed)
@@ -65,13 +77,16 @@ def sbd_fast(
     finest_decomposition = 0
     finest_transform = None
 
-    for _ in range(num_randgen):
-        randmat = npmod.sum(normal((num_matrices, 1, 1)) * hpart, axis=0)
+    for irandgen in range(num_randgen):
+        LOG.debug('Trial %d', irandgen)
+        randmat = npmod.sum(normal((hpart.shape[0], 1, 1)) * hpart, axis=0)
         if matrices.dtype == np.complex128 and not hermitian:
             # pylint: disable-next=used-before-assignment
-            randmat += npmod.sum(normal((num_matrices, 1, 1)) * apart, axis=0)
+            randmat += npmod.sum(normal((apart.shape[0], 1, 1)) * apart, axis=0)
 
+        LOG.debug('Diagonalizing the random matrix..')
         _, eigvecs = npmod.linalg.eigh(randmat)
+        LOG.debug('Done. %d eigvecs', eigvecs.shape[1])
 
         transform = npmod.empty((dim, dim), dtype=matrices.dtype)
         num_identified = 0
@@ -80,6 +95,7 @@ def sbd_fast(
         block_sizes = []
 
         while num_identified < dim:
+            LOG.debug('Starting block construction at %dth eigenvector', evec_idx)
             while evec_idx < dim:
                 has_orth, vec, _ = orthonormalize(eigvecs[:, evec_idx], transform,
                                                   basis_size=num_identified, npmod=npmod)
@@ -90,6 +106,9 @@ def sbd_fast(
                 raise ValueError('Non-orthogonal eigenvectors? Exhausted eigenvectors of random'
                                  ' matrix before completing the unitary.')
 
+            LOG.debug('Found a new dimension at %dth eigenvector. Performing Gram-Schmidt..',
+                      evec_idx)
+
             block_basis = npmod.empty_like(transform)
             if npmod is np:
                 block_basis[0] = vec
@@ -98,7 +117,10 @@ def sbd_fast(
             block_basis, basis_size = gram_schmidt(matrices_combined @ vec, basis=block_basis,
                                                    basis_size=1, npmod=npmod)
 
+            LOG.debug('Done. New block basis size %d', basis_size)
+
             while True:
+                LOG.debug('Performing Gram-Schmidt on random vectors from the block basis..')
                 vrand = npmod.sum(block_basis[:basis_size] * normal((basis_size, 1)), axis=0)
                 if matrices.dtype == np.complex128:
                     vrand += 1.j * npmod.sum(block_basis[:basis_size] * normal((basis_size, 1)),
@@ -107,6 +129,7 @@ def sbd_fast(
                 current_size = basis_size
                 block_basis, basis_size = gram_schmidt(matrices_combined @ vrand, basis=block_basis,
                                                        basis_size=current_size, npmod=npmod)
+                LOG.debug('Done. New block basis size %d', basis_size)
                 if basis_size == current_size:
                     break
 
@@ -120,6 +143,7 @@ def sbd_fast(
             block_sizes.append(basis_size)
 
         if len(block_sizes) > finest_decomposition:
+            LOG.debug('Found the finest block decomposition so far: block sizes %s', block_sizes)
             finest_decomposition = len(block_sizes)
             if return_blocks:
                 blocks = []
