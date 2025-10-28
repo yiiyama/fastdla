@@ -245,6 +245,74 @@ def _resize_basis_and_commlist(
     return (basis, nested_commutators)
 
 
+def _lie_basis(
+    ops: Sequence[np.ndarray],
+    *,
+    algorithm: Algorithms = Algorithms.GRAM_SCHMIDT
+) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
+    ops = jnp.array(ops)
+
+    if ops.shape[0] == 0:
+        raise ValueError('Cannot determine the basis of null space')
+
+    max_size = ((ops.shape[0] - 1) // BASIS_ALLOC_UNIT + 1) * BASIS_ALLOC_UNIT
+    first_op = _normalize(ops[0])
+
+    # Set the aux arrays and resize function
+    match algorithm:
+        case Algorithms.GS_COMMLIST:
+            # Unorthogonalized commutator list
+            aux = [_zeros_with_entries(max_size, first_op[None, ...])]
+        case Algorithms.MATRIX_INV:
+            # X matrix and inverse
+            xmat = jnp.eye(max_size, dtype=np.complex128)
+            xinv = xmat
+            aux = [xmat, xinv]
+        case _:
+            aux = []
+
+    # Initialize a list of normalized generators
+    basis = _zeros_with_entries(ops.shape[0], first_op[None, ...])
+    size = 1
+    for op in ops[1:]:
+        basis, size, *aux = _update_basis(_normalize(op), basis, size, *aux, algorithm=algorithm)
+    basis = basis[:size]
+
+    return basis, aux
+
+
+def lie_basis(
+    ops: Sequence[np.ndarray],
+    *,
+    keep_original: bool = False,
+    algorithm: Algorithms = Algorithms.GRAM_SCHMIDT
+) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
+    """Identify a basis for the linear space spanned by ops.
+
+    Args:
+        ops: Lie algebra elements whose span to calculate the basis for.
+        keep_original: Whether the returned array of Lie algebra elements should contain the
+            original (normalized) operators. If False, the orthonormalized basis used internally in
+            the algorithm is returned.
+        algorithm: Algorithm for linear-independence check and basis update. In general there is no
+            need to use values other than GRAM_SCHMIDT; this feature was used for demonstrations in
+            arXiv:2506.01120.
+
+    Returns:
+        A list of linearly independent ops and an orthonormal basis if algorithm==GS_COMMLIST,
+        otherwise only the orthonormal basis.
+    """
+    if keep_original:
+        if algorithm not in (Algorithms.GRAM_SCHMIDT, Algorithms.GS_COMMLIST):
+            raise ValueError('keep_original=True is only valid for GS algorithm')
+        algorithm = Algorithms.GS_COMMLIST
+
+    basis, aux = _lie_basis(ops, algorithm=algorithm)
+    if algorithm == Algorithms.GS_COMMLIST:
+        return basis, aux[0]
+    return basis
+
+
 def lie_closure(
     generators: Sequence[np.ndarray],
     *,
@@ -274,51 +342,27 @@ def lie_closure(
             raise ValueError('keep_original=True is only valid for GS algorithm')
         algorithm = Algorithms.GS_COMMLIST
 
-    generators_in = np.array(generators)
-
-    if generators_in.shape[0] == 0:
-        if algorithm == Algorithms.GS_COMMLIST:
-            return (generators_in,) * 2
-        return generators_in
-
-    max_size = ((len(generators_in) - 1) // BASIS_ALLOC_UNIT + 1) * BASIS_ALLOC_UNIT
-    max_dim = max_dim or generators_in.shape[-1] ** 2 - 1
-
-    first_op = _normalize(generators_in[0])
-
-    # Set the aux arrays and resize function
-    match algorithm:
-        case Algorithms.GS_COMMLIST:
-            # Unorthogonalized commutator list
-            aux = [_zeros_with_entries(max_size, first_op[None, ...])]
-            resize = _resize_basis_and_commlist
-        case Algorithms.MATRIX_INV:
-            # X matrix and inverse
-            xmat = jnp.eye(max_size, dtype=np.complex128)
-            xinv = xmat
-            aux = [xmat, xinv]
-            resize = _resize_basis_and_x
-        case _:
-            aux = []
-            resize = _resize_basis
+    generators, aux = _lie_basis(generators, algorithm=algorithm)
+    LOG.info('Number of independent generators: %d', generators.shape[0])
 
     # Fix the main loop function with algorithm
     main_loop_body = partial(_main_loop_body, algorithm=algorithm,
                              log_level=LOG.getEffectiveLevel())
+    max_dim = max_dim or generators.shape[-1] ** 2 - 1
 
-    # Initialize a list of normalized generators
-    generators = _zeros_with_entries(generators_in.shape[0], first_op[None, ...])
-    size = 1
-    for op in generators_in[1:]:
-        generators, size, *aux = _update_basis(_normalize(op), generators, size, *aux,
-                                               algorithm=algorithm)
-    generators = generators[:size]
-
-    LOG.info('Number of independent generators: %d', generators.shape[0])
+    # Set the resize function
+    match algorithm:
+        case Algorithms.GS_COMMLIST:
+            resize = _resize_basis_and_commlist
+        case Algorithms.MATRIX_INV:
+            resize = _resize_basis_and_x
+        case _:
+            resize = _resize_basis
 
     # Initialize the basis
-    basis = _zeros_with_entries(max_size, generators)
     basis_size = generators.shape[0]
+    max_size = ((basis_size - 1) // BASIS_ALLOC_UNIT + 1) * BASIS_ALLOC_UNIT
+    basis = _zeros_with_entries(max_size, generators)
 
     # First compute the commutators among the generators
     idx_gens, idx_ops = np.array(

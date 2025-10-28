@@ -56,17 +56,6 @@ def _orthogonalize(
     return _uniquify_fast(concat_indices, concat_coeffs, normalize)
 
 
-def orthogonalize(
-    new_op: SparsePauliSum,
-    basis: SparsePauliSumArray,
-    normalize: bool = True
-) -> SparsePauliSum:
-    """Subtract the subspace projection of an algebra element from itself."""
-    indices, coeffs = _orthogonalize(new_op.indices, new_op.coeffs, basis.indices, basis.coeffs,
-                                     basis.ptrs, normalize)
-    return SparsePauliSum(indices, coeffs, num_qubits=new_op.num_qubits, no_check=True)
-
-
 @njit
 def _if_independent_update(
     indices: np.ndarray,
@@ -110,11 +99,14 @@ def _if_independent_update(
 def if_independent_update(
     op: SparsePauliSum,
     basis: SparsePauliSumArray,
+    unorth_basis: SparsePauliSumArray | None,
     log_level: int
 ) -> bool:
     updated, basis.indices, basis.coeffs = _if_independent_update(
         op.indices, op.coeffs, basis.indices, basis.coeffs, basis.ptrs, log_level
     )
+    if updated and unorth_basis is not None:
+        unorth_basis.append(op)
     return updated
 
 
@@ -165,8 +157,51 @@ def _update_loop(
     return basis_indices, basis_coeffs, independent_elements
 
 
+def _lie_basis(
+    ops: SparsePauliSumArray,
+    keep_original: bool
+):
+    if len(ops) == 0:
+        raise ValueError('Cannot determine the basis of null space')
+
+    # Allocate the basis and X arrays and compute the initial basis
+    basis = SparsePauliSumArray([ops[0].normalize()])
+    unorth_basis = None
+    if keep_original:
+        unorth_basis = SparsePauliSumArray([basis[0]])
+
+    for iop in range(1, len(ops)):
+        op = ops[iop].normalize()
+        if_independent_update(op, basis, unorth_basis, LOG.getEffectiveLevel())
+
+    return basis, unorth_basis
+
+
+def lie_basis(
+    ops: SparsePauliSumArray,
+    *,
+    keep_original: bool = False
+) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
+    """Identify a basis for the linear space spanned by ops.
+
+    Args:
+        ops: Lie algebra elements whose span to calculate the basis for.
+        keep_original: Whether the returned array of Lie algebra elements should contain the
+            original (normalized) operators. If False, the orthonormalized basis used internally in
+            the algorithm is returned.
+
+    Returns:
+        A list of linearly independent ops and an orthonormal basis if keep_original=True,
+        otherwise only the orthonormal basis.
+    """
+    basis, unorth_basis = _lie_basis(ops, keep_original)
+    if keep_original:
+        return basis, unorth_basis
+    return basis
+
+
 def lie_closure(
-    generators_in: SparsePauliSumArray,
+    generators: SparsePauliSumArray,
     *,
     keep_original: bool = False,
     max_dim: Optional[int] = None,
@@ -189,32 +224,14 @@ def lie_closure(
         A list of linearly independent nested commutators and the orthonormal basis if
         keep_original=True, otherwise only the orthonormal basis.
     """
-    if len(generators_in) == 0:
-        if keep_original:
-            return (generators_in,) * 2
-        return generators_in
-
-    max_dim = max_dim or 4 ** generators_in.num_qubits - 1
-
-    # Allocate the basis and X arrays and compute the initial basis
-    generators = SparsePauliSumArray([generators_in[0].normalize()])
-
-    if keep_original:
-        nested_commutators = SparsePauliSumArray([generators[0]])
-
-    for iop in range(1, len(generators_in)):
-        op = generators_in[iop].normalize()
-        updated = if_independent_update(op, generators, LOG.getEffectiveLevel())
-        if keep_original and updated:
-            nested_commutators.append(op)  # pylint: disable=possibly-used-before-assignment
-
+    generators, unorth_basis = _lie_basis(generators, keep_original)
     num_gen = len(generators)
     LOG.info('Number of independent generators: %d', num_gen)
 
     basis = copy.deepcopy(generators)
 
     if keep_original:
-        sources = (nested_commutators, nested_commutators)
+        sources = (unorth_basis, unorth_basis)
     else:
         sources = (basis, generators)
 
@@ -222,13 +239,15 @@ def lie_closure(
     for iop1 in range(num_gen):
         for iop2 in range(iop1):
             comm = sps_commutator_fast(sources[1][iop1], sources[1][iop2], True)
-            updated = if_independent_update(comm, basis, LOG.getEffectiveLevel())
+            updated = if_independent_update(comm, basis, unorth_basis, LOG.getEffectiveLevel())
             if keep_original and updated:
-                nested_commutators.append(comm)
+                unorth_basis.append(comm)
+
+    max_dim = max_dim or 4 ** generators.num_qubits - 1
 
     if len(basis) >= max_dim:
         if keep_original:
-            return nested_commutators[:max_dim], basis[:max_dim]
+            return unorth_basis[:max_dim], basis[:max_dim]
         return basis[:max_dim]
 
     if max_workers is not None:
@@ -287,7 +306,7 @@ def lie_closure(
             new_dim = len(basis)
             if keep_original:
                 for ires in independent_elements:
-                    nested_commutators.append(result_indices[ires], result_coeffs[ires])
+                    unorth_basis.append(result_indices[ires], result_coeffs[ires])
 
             if LOG.getEffectiveLevel() <= logging.DEBUG:
                 LOG.debug('Found %d new ops in %.2fs',
@@ -305,5 +324,5 @@ def lie_closure(
                 LOG.info('Adding %d commutators; %d more to be evaluated', num_added, len(futures))
 
     if keep_original:
-        return nested_commutators, basis
+        return unorth_basis, basis
     return basis

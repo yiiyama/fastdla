@@ -10,35 +10,33 @@ AlgebraElement = Any
 Basis = Sequence[AlgebraElement]
 
 
-def orthogonalize(
-    op: AlgebraElement,
-    basis: Basis
-) -> AlgebraElement:
-    r"""Subtract the subspace projection of an algebra element from itself.
-
-    Let the orthonormal basis be :math:`V = \{g_j\}_{j=0}^{n-1}`. The orthogonal component of
-    :math:`h` with respect to :math:`V` is given by
-
-    .. math::
-
-        h_{\perp} & = h - \mathrm{proj}_V h \\
-                  & = h - \sum_{j=0}^{n-1} \langle g_j, h \rangle g_j.
-
-    The inputs to this function can be given in the matrix or SparsePauliSum representations.
+def lie_basis(
+    ops: Basis,
+    *,
+    keep_original: bool = False,
+    **kwargs
+) -> tuple[Basis, Basis] | Basis:
+    r"""Compute a basis of the linear space spanned by ops.
 
     Args:
-        op: Operator :math:`h` to be orthogonalized from :math:`V`.
-        basis: Basis :math:`V`.
+        generators: Lie algebra elements whose span to calculate the basis for.
+        keep_original: Whether the returned array of Lie algebra elements should contain the
+            original (normalized) generators. If False, the orthonormalized basis used internally in
+            the algorithm is returned.
 
     Returns:
-        Orthogonal component :math:`h_{\perp}`.
+        A list of linearly independent ops and an orthonormal basis if keep_original=True,
+        otherwise only the orthonormal basis.
     """
-    if isinstance(op, SparsePauliSum):
-        from fastdla._lie_closure_impl.sparse_numba import orthogonalize as fn
-    else:
-        from fastdla._lie_closure_impl.matrix_jax import orthogonalize as fn
+    if isinstance(ops, list) and isinstance(ops[0], SparsePauliSum):
+        ops = SparsePauliSumArray(ops)
 
-    return fn(op, basis)
+    if isinstance(ops, SparsePauliSumArray):
+        from fastdla._lie_closure_impl.sparse_numba import lie_basis as fn
+    else:
+        from fastdla._lie_closure_impl.matrix_jax import lie_basis as fn
+
+    return fn(ops, keep_original=keep_original, **kwargs)
 
 
 def lie_closure(
