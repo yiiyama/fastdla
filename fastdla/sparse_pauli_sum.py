@@ -48,6 +48,7 @@ class SparsePauliSum:
             cls.__matmul__ = sps_matmul_fast
             cls.commutator = sps_commutator_fast
             cls.dot = sps_dot_fast
+        SparsePauliSumArray.switch_impl(to)
 
     def __init__(
         self,
@@ -224,6 +225,15 @@ class SparsePauliSumArray:
     """
     MEM_ALLOC_UNIT = 1024
 
+    @classmethod
+    def switch_impl(cls, to: str):
+        if to == 'ref':
+            cls.append = spsarray_append
+        elif to == 'fast':
+            # pylint: disable-next=import-outside-toplevel
+            from fastdla.sps_fast import spsarray_append_fast
+            cls.append = spsarray_append_fast
+
     def __init__(
         self,
         pauli_sums: Optional[list[SparsePauliSum]] = None,
@@ -272,19 +282,9 @@ class SparsePauliSumArray:
         self.indices = np.concatenate([self.indices, np.empty(addition, dtype=np.uint64)])
         self.coeffs = np.concatenate([self.coeffs, np.empty(addition, dtype=np.complex128)])
 
-    def append(self, pauli_sum: SparsePauliSum):
+    def append(self, arg1: SparsePauliSum | np.ndarray, arg2: Optional[np.ndarray] = None):
         """Append a new SparsePauliSum."""
-        if self.num_qubits is None:
-            self.num_qubits = pauli_sum.num_qubits
-        elif pauli_sum.num_qubits != self.num_qubits:
-            raise ValueError('Inconsistent num_qubits')
-
-        if (new_end := self.ptrs[-1] + pauli_sum.num_terms) > self.indices.shape[0]:
-            self._expand((new_end // self.MEM_ALLOC_UNIT + 1) * self.MEM_ALLOC_UNIT)
-
-        self.ptrs.append(self.ptrs[-1] + pauli_sum.num_terms)
-        self.indices[self.ptrs[-2]:self.ptrs[-1]] = pauli_sum.indices
-        self.coeffs[self.ptrs[-2]:self.ptrs[-1]] = pauli_sum.coeffs
+        spsarray_append(self, arg1, arg2)
 
     def normalize(self) -> 'SparsePauliSumArray':
         """Return a new array with normalized elements."""
@@ -309,8 +309,8 @@ class SparsePauliSumArray:
             raise IndexError(f'Invalid index {idx}')
 
         return SparsePauliSum(
-            self.indices[self.ptrs[idx]:self.ptrs[idx + 1]],
-            self.coeffs[self.ptrs[idx]:self.ptrs[idx + 1]],
+            np.array(self.indices[self.ptrs[idx]:self.ptrs[idx + 1]]),
+            np.array(self.coeffs[self.ptrs[idx]:self.ptrs[idx + 1]]),
             self.num_qubits,
             no_check=True
         )
@@ -430,3 +430,27 @@ def sps_dot(o1: SparsePauliSum, o2: SparsePauliSum) -> complex:
     """Inner product between two SparsePauliSums."""
     common_entries = np.nonzero(o1.indices[:, None] - o2.indices[None, :] == 0)
     return np.sum(o1.coeffs[common_entries[0]].conjugate() * o2.coeffs[common_entries[1]])
+
+
+def spsarray_append(
+    array: SparsePauliSumArray,
+    arg1: SparsePauliSum | np.ndarray,
+    arg2: Optional[np.ndarray] = None
+):
+    if arg2 is None:
+        if array.num_qubits is None:
+            array.num_qubits = arg1.num_qubits
+        elif arg1.num_qubits != array.num_qubits:
+            raise ValueError('Inconsistent num_qubits')
+        indices = arg1.indices
+        coeffs = arg1.coeffs
+    else:
+        indices = arg1
+        coeffs = arg2
+
+    if (new_end := array.ptrs[-1] + indices.shape[0]) > array.indices.shape[0]:
+        array._expand((new_end // array.MEM_ALLOC_UNIT + 1) * array.MEM_ALLOC_UNIT)
+
+    array.ptrs.append(new_end)
+    array.indices[array.ptrs[-2]:array.ptrs[-1]] = indices
+    array.coeffs[array.ptrs[-2]:array.ptrs[-1]] = coeffs

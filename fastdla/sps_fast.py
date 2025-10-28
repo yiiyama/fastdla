@@ -1,11 +1,13 @@
 """Numba-compiled versions of SparsePauliSum operations."""
 import logging
+from typing import Optional
 import numpy as np
 from numba import njit
 from .pauli import PAULI_MULT_COEFF, PAULI_MULT_INDEX
-from .sparse_pauli_sum import SparsePauliSum
+from .sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
 
 LOG = logging.getLogger(__name__)
+MEM_ALLOC_UNIT = SparsePauliSumArray.MEM_ALLOC_UNIT
 
 
 @njit(nogil=True, inline='always')
@@ -227,3 +229,52 @@ def sps_dot_fast(lhs: SparsePauliSum, rhs: SparsePauliSum) -> complex:
         return SparsePauliSum([], [], lhs.num_qubits, no_check=True)
 
     return _sps_dot_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs)
+
+
+@njit(nogil=True)
+def _spsarray_append_fast(
+    array_indices: np.ndarray,
+    array_coeffs: np.ndarray,
+    array_ptrs: list[int],
+    indices: np.ndarray,
+    coeffs: np.ndarray
+) -> tuple[np.ndarray, np.ndarray]:
+    next_ptr = array_ptrs[-1] + indices.shape[0]
+    if next_ptr > array_indices.shape[0]:
+        # At maximum capacity -> reallocate
+        additional_capacity = (((next_ptr - array_indices.shape[0]) // MEM_ALLOC_UNIT + 1)
+                               * MEM_ALLOC_UNIT)
+        array_indices = np.concatenate((
+            array_indices,
+            np.empty(additional_capacity, dtype=array_indices.dtype)
+        ))
+        array_coeffs = np.concatenate((
+            array_coeffs,
+            np.empty(additional_capacity, dtype=array_coeffs.dtype)
+        ))
+
+    array_ptrs.append(next_ptr)
+    array_indices[array_ptrs[-2]:array_ptrs[-1]] = indices
+    array_coeffs[array_ptrs[-2]:array_ptrs[-1]] = coeffs
+
+    return array_indices, array_coeffs
+
+
+def spsarray_append_fast(
+    array: SparsePauliSumArray,
+    arg1: SparsePauliSum | np.ndarray,
+    arg2: Optional[np.ndarray] = None
+):
+    if arg2 is None:
+        if array.num_qubits is None:
+            array.num_qubits = arg1.num_qubits
+        elif arg1.num_qubits != array.num_qubits:
+            raise ValueError('Inconsistent num_qubits')
+        indices = arg1.indices
+        coeffs = arg1.coeffs
+    else:
+        indices = arg1
+        coeffs = arg2
+
+    array.indices, array.coeffs = _spsarray_append_fast(array.indices, array.coeffs, array.ptrs,
+                                                        indices, coeffs)

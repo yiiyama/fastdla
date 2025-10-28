@@ -1,13 +1,15 @@
 """Implementation of the Lie closure generator using SparsePauliSums."""
 from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 import logging
+import copy
 from typing import Optional
 import time
 from multiprocessing import cpu_count
 import numpy as np
 from numba import njit, objmode
 from fastdla.sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
-from fastdla.sps_fast import abs_square, _uniquify_fast, _sps_commutator_fast, _sps_dot_fast
+from fastdla.sps_fast import (abs_square, sps_commutator_fast, _uniquify_fast, _sps_commutator_fast,
+                              _sps_dot_fast, _spsarray_append_fast)
 
 LOG = logging.getLogger(__name__)
 BASIS_ALLOC_UNIT = 1024
@@ -66,45 +68,18 @@ def orthogonalize(
 
 
 @njit
-def _update_basis(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, log_level):
-    next_ptr = basis_ptrs[-1] + indices.shape[0]
-    if next_ptr > basis_indices.shape[0]:
-        # At maximum capacity -> reallocate
-        additional_capacity = (((next_ptr - basis_indices.shape[0]) // MEM_ALLOC_UNIT + 1)
-                               * MEM_ALLOC_UNIT)
-        basis_indices = np.concatenate((
-            basis_indices,
-            np.empty(additional_capacity, dtype=basis_indices.dtype)
-        ))
-        basis_coeffs = np.concatenate((
-            basis_coeffs,
-            np.empty(additional_capacity, dtype=basis_coeffs.dtype)
-        ))
-        if log_level <= logging.DEBUG:
-            with objmode():
-                LOG.debug('Expanded the basis array by %d', additional_capacity)
-
-    basis_ptrs.append(next_ptr)
-    basis_indices[basis_ptrs[-2]:basis_ptrs[-1]] = indices
-    basis_coeffs[basis_ptrs[-2]:basis_ptrs[-1]] = coeffs
-
-    return basis_indices, basis_coeffs
-
-
-@njit
 def _if_independent_update(
     indices: np.ndarray,
     coeffs: np.ndarray,
-    isource: tuple[int, int],
     basis_indices: np.ndarray,
     basis_coeffs: np.ndarray,
     basis_ptrs: list[int],
     log_level: int
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[bool, np.ndarray, np.ndarray]:
     o_indices, o_coeffs = _orthogonalize(indices, coeffs, basis_indices, basis_coeffs, basis_ptrs,
                                          False)
     if o_indices.shape[0] == 0:
-        return basis_indices, basis_coeffs
+        return False, basis_indices, basis_coeffs
 
     o_norm = np.sqrt(np.sum(abs_square(o_coeffs)))
     o_coeffs /= o_norm
@@ -118,26 +93,35 @@ def _if_independent_update(
         o_norm = np.sqrt(np.sum(abs_square(o_coeffs)))
         if not np.isclose(o_norm, 1., rtol=1.e-5):
             # We had a false orthogonal vector
-            return basis_indices, basis_coeffs
+            return False, basis_indices, basis_coeffs
 
         o_coeffs /= o_norm
 
     if log_level <= logging.DEBUG:
-        new_size = len(basis_ptrs)
+        basis_size = len(basis_ptrs)  # need to do this outside of objmode()
         with objmode():
-            LOG.debug('Updating basis with commutator [%d, %d] (new size %d)',
-                      isource[0], isource[1], new_size)
+            LOG.debug('Updating basis size to %d', basis_size)
 
-    basis_indices, basis_coeffs = _update_basis(o_indices, o_coeffs, basis_indices, basis_coeffs,
-                                                basis_ptrs, log_level)
-    return basis_indices, basis_coeffs
+    basis_indices, basis_coeffs = _spsarray_append_fast(basis_indices, basis_coeffs, basis_ptrs,
+                                                        o_indices, o_coeffs)
+    return True, basis_indices, basis_coeffs
+
+
+def if_independent_update(
+    op: SparsePauliSum,
+    basis: SparsePauliSumArray,
+    log_level: int
+) -> bool:
+    updated, basis.indices, basis.coeffs = _if_independent_update(
+        op.indices, op.coeffs, basis.indices, basis.coeffs, basis.ptrs, log_level
+    )
+    return updated
 
 
 @njit
 def _update_loop(
     result_indices: list[np.ndarray],
     result_coeffs: list[np.ndarray],
-    result_isource: list[tuple[int, int]],
     basis_indices: np.ndarray,
     basis_coeffs: np.ndarray,
     basis_ptrs: list[int],
@@ -155,10 +139,9 @@ def _update_loop(
     for ires in range(num_results):
         if log_level <= logging.INFO and ires % 2000 == 0:
             la_dim = len(basis_ptrs) - 1
-            ilhs, irhs = result_isource[ires]
             with objmode():
-                LOG.info('Processing commutator [%d, %d] (%d/%d). Lie algebra dim %d',
-                         ilhs, irhs, ires, num_results, la_dim)
+                LOG.info('Processing commutator %d/%d. Lie algebra dim %d',
+                         ires, num_results, la_dim)
 
         indices = result_indices[ires]
         coeffs = result_coeffs[ires]
@@ -169,32 +152,21 @@ def _update_loop(
 
         prev_indices = indices
         prev_coeffs_conj = coeffs.conjugate()
-        isource = result_isource[ires]
 
         # Check linear independence and update the basis_* arrays
-        current_size = len(basis_ptrs) - 1
-        basis_indices, basis_coeffs = _if_independent_update(
-            indices, coeffs, isource, basis_indices, basis_coeffs, basis_ptrs, log_level
+        updated, basis_indices, basis_coeffs = _if_independent_update(
+            indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, log_level
         )
-        new_size = len(basis_ptrs) - 1
-        if new_size != current_size:
+        if updated:
             independent_elements.append(ires)
-        if new_size == max_dim:
+        if len(basis_ptrs) - 1 == max_dim:
             break
 
     return basis_indices, basis_coeffs, independent_elements
 
 
-@njit(nogil=True)
-def _commutator(ilhs, lhs_indices, lhs_coeffs, irhs, rhs_indices, rhs_coeffs, num_qubits):
-    """Calculate the commutator and return the results together with the row and column numbers."""
-    indices, coeffs = _sps_commutator_fast(lhs_indices, lhs_coeffs, rhs_indices, rhs_coeffs,
-                                           num_qubits, True)
-    return indices, coeffs, ilhs, irhs
-
-
 def lie_closure(
-    generators: SparsePauliSumArray,
+    generators_in: SparsePauliSumArray,
     *,
     keep_original: bool = False,
     max_dim: Optional[int] = None,
@@ -217,32 +189,42 @@ def lie_closure(
         A list of linearly independent nested commutators and the orthonormal basis if
         keep_original=True, otherwise only the orthonormal basis.
     """
-    if len(generators) == 0:
+    if len(generators_in) == 0:
         if keep_original:
-            return generators, generators
-        return generators
+            return (generators_in,) * 2
+        return generators_in
 
-    max_dim = max_dim or 4 ** generators.num_qubits - 1
+    max_dim = max_dim or 4 ** generators_in.num_qubits - 1
 
     # Allocate the basis and X arrays and compute the initial basis
-    basis = SparsePauliSumArray([generators[0].normalize()])
+    generators = SparsePauliSumArray([generators_in[0].normalize()])
 
     if keep_original:
-        nested_commutators = SparsePauliSumArray([basis[0]])
-        source = nested_commutators
-    else:
-        source = basis
+        nested_commutators = SparsePauliSumArray([generators[0]])
 
-    for iop in range(1, len(generators)):
-        op = generators[iop]
-        op = op.normalize()
-        current_size = len(basis)
-        basis.indices, basis.coeffs = _if_independent_update(
-            op.indices, op.coeffs, (iop, -1), basis.indices, basis.coeffs, basis.ptrs,
-            LOG.getEffectiveLevel()
-        )
-        if keep_original and len(basis) != current_size:
-            nested_commutators.append(op)
+    for iop in range(1, len(generators_in)):
+        op = generators_in[iop].normalize()
+        updated = if_independent_update(op, generators, LOG.getEffectiveLevel())
+        if keep_original and updated:
+            nested_commutators.append(op)  # pylint: disable=possibly-used-before-assignment
+
+    num_gen = len(generators)
+    LOG.info('Number of independent generators: %d', num_gen)
+
+    basis = copy.deepcopy(generators)
+
+    if keep_original:
+        sources = (nested_commutators, nested_commutators)
+    else:
+        sources = (basis, generators)
+
+    # Compute the commutators among elements of source[1]
+    for iop1 in range(num_gen):
+        for iop2 in range(iop1):
+            comm = sps_commutator_fast(sources[1][iop1], sources[1][iop2], True)
+            updated = if_independent_update(comm, basis, LOG.getEffectiveLevel())
+            if keep_original and updated:
+                nested_commutators.append(comm)
 
     if len(basis) >= max_dim:
         if keep_original:
@@ -255,26 +237,19 @@ def lie_closure(
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = set()
 
-        def calculate_commutators(lhs_first):
-            for ib1 in range(lhs_first, len(source)):
-                start, end = source.ptrs[ib1:ib1 + 2]
-                lhs_indices = np.array(source.indices[start:end])
-                lhs_coeffs = np.array(source.coeffs[start:end])
-                for ib2 in range(ib1):
-                    start, end = source.ptrs[ib2:ib2 + 2]
-                    rhs_indices = np.array(source.indices[start:end])
-                    rhs_coeffs = np.array(source.coeffs[start:end])
+        def calculate_commutators(start):
+            for iopl in range(start, len(sources[0])):
+                lhs = sources[0][iopl]
+                for iopr in range(num_gen):
+                    rhs = sources[1][iopr]
                     futures.add(
-                        executor.submit(
-                            _commutator,
-                            ib1, lhs_indices, lhs_coeffs,
-                            ib2, rhs_indices, rhs_coeffs,
-                            basis.num_qubits
-                        )
+                        executor.submit(_sps_commutator_fast,
+                                        lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs,
+                                        basis.num_qubits, True)
                     )
 
         # Initial set of commutators of the original generators
-        calculate_commutators(1)
+        calculate_commutators(num_gen)
 
         LOG.info('Starting with %d commutators..', len(futures))
 
@@ -301,22 +276,19 @@ def lie_closure(
             sort_idx = sorted(range(len(results)), key=indices_tuples.__getitem__)
             result_indices = [results[idx][0] for idx in sort_idx]
             result_coeffs = [results[idx][1] for idx in sort_idx]
-            result_isource = [results[idx][2:] for idx in sort_idx]
             LOG.debug('Sorted %d results in %.2fs', len(results), time.time() - sort_start)
 
             main_loop_start = time.time()
             old_dim = len(basis)
             basis.indices, basis.coeffs, independent_elements = _update_loop(
-                result_indices, result_coeffs, result_isource, basis.indices, basis.coeffs,
+                result_indices, result_coeffs, basis.indices, basis.coeffs,
                 basis.ptrs, max_dim, LOG.getEffectiveLevel()
             )
             new_dim = len(basis)
             if keep_original:
                 for ires in independent_elements:
-                    nested_commutators.append(
-                        SparsePauliSum(result_indices[ires], result_coeffs[ires],
-                                       num_qubits=basis.num_qubits)
-                    )
+                    nested_commutators.append(result_indices[ires], result_coeffs[ires])
+
             if LOG.getEffectiveLevel() <= logging.DEBUG:
                 LOG.debug('Found %d new ops in %.2fs',
                           new_dim - old_dim, time.time() - main_loop_start)
