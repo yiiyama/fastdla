@@ -54,28 +54,31 @@ def lie_closure(
 
     .. code-block:: python
 
-        V = []
+        V0 = []
         for g in G:
-            g_perp = orthogonalize(g, V)
+            g_perp = orthogonalize(g, V0)
             if g_perp != 0:
-                V.append(g_perp / norm(g_perp))
+                V0.append(g_perp / norm(g_perp))
 
-        l = 1
-        r = 0
-        while l < len(V):
-            for m in range(r):
-                h = commutator(V[l], V[m])
-                h_perp = orthogonalize(h, V)
-                if h_perp != 0:
-                    V.append(h_perp / norm(h_perp))
+        V = V0.copy()
 
-            r += 1
-            if r == l:
-                l += 1
-                r = 0
+        Vprev = V0
+        Vnew = []
+        while True:
+            for g, h in product(V0, Vprev):
+                i = commutator(g, h)
+                i_perp = orthogonalize(i, V)
+                if i_perp != 0:
+                    Vnew.append(i_perp / norm(i_perp))
 
-    If keep_original is True, there will be an additional list ``B`` which stores the actual nested
-    commutators ``h``. The function then returns both ``B`` and ``V``.
+            if len(Vnew) == 0:
+                break
+            V += Vnew
+            Vprev = Vnew
+            Vnew = []
+
+    If keep_original is True, there will be an additional list ``B`` which stores the normalized
+    nested commutators ``h``. The function then returns both ``B`` and ``V``.
 
     The inputs to this function can be given in the matrix or SparsePauliSum representations. If
     matrices are given, JAX-based implementation will be called.
