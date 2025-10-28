@@ -6,7 +6,7 @@ from scipy.sparse import csr_array
 try:
     import jax
     import jax.numpy as jnp
-    from jax.experimental.sparse import BCSR
+    from jax.experimental.sparse import BCOO
 except ImportError:
     jax = None
     jnp = None
@@ -167,7 +167,7 @@ class PauliProduct:
             matrix = np.kron(PAULIS[ip], matrix)
         return matrix
 
-    def _to_sparse_matrix(self, npmod) -> csr_array:
+    def _to_sparse_matrix(self, npmod) -> csr_array | BCOO:
         cols = npmod.array(0)
         data = npmod.array(1.)
         for iq, ip in enumerate(self.indices()):
@@ -179,7 +179,7 @@ class PauliProduct:
         if npmod is np:
             return csr
         if npmod is jnp:
-            return BCSR.from_scipy_sparse(csr)
+            return BCOO.from_scipy_sparse(csr)
 
         raise NotImplementedError(f'npmod {npmod} is not supported')
 
