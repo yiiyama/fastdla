@@ -151,25 +151,33 @@ def _update_basis(
     return basis_size, basis, list(aux)
 
 
-def get_loop_body(algorithm: Algorithms, log_level: Optional[int] = None):
+def get_loop_body(algorithm: Algorithms, print_every: Optional[int] = None):
     """Make the compiled loop body function using the given algorithm."""
-    if log_level is None:
-        log_level = LOG.getEffectiveLevel()
+    log_level = LOG.getEffectiveLevel()
+    if print_every is None:
+        if log_level <= logging.DEBUG:
+            print_every = 1
+        elif log_level <= logging.INFO:  # 20
+            print_every = log_level * 100
+        else:
+            print_every = -1
+
+    def callback(idx_gen, idx_op, basis_size, generators):
+        icomm = idx_op * generators.shape[0] + idx_gen
+        LOG.log(log_level,
+                'Basis size %d; %dth/%d commutator [g[%d], b[%d]]',
+                basis_size, icomm, basis_size * generators.shape[0], idx_gen, idx_op)
 
     @jax.jit
     def loop_body(val: tuple) -> tuple:
         """Compute the commutator and update the basis with orthogonal components."""
         idx_gen, idx_op, basis_size, generators, basis, aux = val
 
-        if log_level <= logging.INFO:
+        if print_every > 0:
             icomm = idx_op * generators.shape[0] + idx_gen
             jax.lax.cond(
-                jnp.equal(icomm % 2000, 0),
-                lambda: jax.debug.print('Basis size {size}; {icomm}th/{total} commutator'
-                                        ' [g[{idx_gen}], b[{idx_new}]]',
-                                        size=basis_size, icomm=icomm,
-                                        total=basis_size * generators.shape[0],
-                                        idx_gen=idx_gen, idx_new=idx_op),
+                jnp.equal(icomm % print_every, 0),
+                lambda: jax.debug.callback(callback, idx_gen, idx_op, basis_size, generators),
                 lambda: None
             )
 
@@ -292,7 +300,8 @@ def lie_closure(
     *,
     max_dim: Optional[int] = None,
     algorithm: Algorithms = Algorithms.GS_DIRECT,
-    return_aux: bool = False
+    return_aux: bool = False,
+    print_every: Optional[int] = None
 ) -> np.ndarray | tuple[np.ndarray, list]:
     """Compute the Lie closure of given generators.
 
@@ -311,7 +320,7 @@ def lie_closure(
     LOG.info('Number of independent generators: %d', generators.shape[0])
 
     # Get the main loop function for the algorithm
-    main_loop_body = get_loop_body(algorithm)
+    main_loop_body = get_loop_body(algorithm, print_every=print_every)
     max_dim = max_dim or generators.shape[-1] ** 2 - 1
 
     # Initialize the basis

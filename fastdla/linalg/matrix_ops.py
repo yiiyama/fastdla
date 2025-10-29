@@ -27,10 +27,11 @@ def orthogonalize(
     new_op: Array,
     basis: Array
 ) -> Array:
+    """Extract the orthogonal component of an operator with respect to an orthonormal basis."""
     return new_op - jnp.tensordot(innerprod(basis, new_op), basis, [[0], [0]])
 
 
 @jax.jit
 def commutator(op1: Array, op2: Array) -> Array:
-    """Normalized commutator."""
+    """Commutator [op1, op2]."""
     return op1 @ op2 - op2 @ op1
