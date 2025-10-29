@@ -202,14 +202,10 @@ class SparsePauliSum:
     def to_matrix(self, *, sparse: bool = False, npmod=np) -> np.ndarray | csr_array:
         """Convert the Pauli sum to a dense (2**num_qubits, 2**num_qubits) matrix."""
         pprod = PauliProduct(self.indices[0], self.num_qubits)
-        pmat = pprod.to_matrix(sparse=sparse, npmod=npmod)
-        pmat.data *= self.coeffs[0]
-        matrix = pmat
+        matrix = pprod.to_matrix(sparse=sparse, npmod=npmod) * self.coeffs[0]
         for index, coeff in zip(self.indices[1:], self.coeffs[1:]):
             pprod = PauliProduct(index, self.num_qubits)
-            pmat = pprod.to_matrix(sparse=sparse, npmod=npmod)
-            pmat.data *= coeff
-            matrix += pmat
+            matrix += pprod.to_matrix(sparse=sparse, npmod=npmod) * coeff
 
         return matrix
 

@@ -30,50 +30,48 @@ def _zeros_with_entries(size: int, init: Array) -> Array:
 
 
 @jax.jit
-def _update_gram_schmidt(
+def _update_gs_direct(
     op: Array,
-    basis: Array,
-    size: int
-) -> tuple[Array, int]:
+    size: int,
+    basis: Array
+) -> tuple[bool, Array]:
     """Update the basis if op has an orthogonal component."""
     has_orthcomp, orth = _has_orthcomp(op, basis)
-    return jax.lax.cond(
+    basis = jax.lax.cond(
         has_orthcomp,
-        lambda _orth, _basis, _size: (_basis.at[_size].set(_orth), _size + 1),
-        lambda _, _basis, _size: (_basis, _size),
+        lambda _orth, _basis, _size: _basis.at[_size].set(_orth),
+        lambda a, _basis, b: _basis,
         orth, basis, size
     )
+    return has_orthcomp, basis
 
 
 @jax.jit
-def _update_gs_commlist(
+def _update_gram_schmidt(
     op: Array,
-    basis: Array,
     size: int,
-    nested_commutators: Array
-) -> tuple[Array, int, Array]:
+    basis: Array,
+    orthonormal_basis: Array
+) -> tuple[bool, Array, Array]:
     """Update the basis and the nested commutators list if op has an orthogonal component."""
-    has_orthcomp, orth = _has_orthcomp(op, basis)
-    return jax.lax.cond(
+    has_orthcomp, orthonormal_basis = _update_gs_direct(op, size, orthonormal_basis)
+    basis = jax.lax.cond(
         has_orthcomp,
-        lambda _orth, _basis, _size, _comm, _comms: (
-            _basis.at[_size].set(_orth),
-            _size + 1,
-            _comms.at[_size].set(_comm)
-        ),
-        lambda a, _basis, _size, b, _comms: (_basis, _size, _comms),
-        orth, basis, size, op, nested_commutators
+        lambda _op, _basis, _size: _basis.at[_size].set(_op),
+        lambda a, _basis, b: _basis,
+        op, basis, size
     )
+    return has_orthcomp, basis, orthonormal_basis
 
 
 @jax.jit
 def _update_matrix_inv(
     op: Array,
-    basis: Array,
     size: int,
+    basis: Array,
     xmat: Array,
     xinv: Array
-) -> tuple[Array, int, Array, Array]:
+) -> tuple[bool, Array, Array, Array]:
     """Update the basis and the X matrix with op if it is independent."""
     def _residual(_op, _basis, _xinv, _pidag_q):
         # Residual calculation: subtract Pi*ai from Q directly
@@ -95,81 +93,62 @@ def _update_matrix_inv(
         _basis = _basis.at[_size].set(_op)
         _xmat = _xmat.at[:, _size].set(_new_xcol).at[size, :].set(_new_xcol.conjugate())
         _xmat = _xmat.at[_size, _size].set(1.)
-        return _basis, _size + 1, _xmat, jnp.linalg.inv(_xmat)
+        return _basis, _xmat, jnp.linalg.inv(_xmat)
 
-    return jax.lax.cond(
+    basis, xmat, xinv = jax.lax.cond(
         is_independent,
         _update,
-        lambda a, b, _basis, _size, _xmat, _xinv: (_basis, _size, _xmat, _xinv),
+        lambda a, b, _basis, _size, _xmat, _xinv: (_basis, _xmat, _xinv),
         op, new_xcol, basis, size, xmat, xinv
     )
+    return is_independent, basis, xmat, xinv
 
 
 @jax.jit
 def _update_svd(
     op: Array,
-    basis: Array,
-    size: int
-) -> tuple[Array, int]:
+    size: int,
+    basis: Array
+) -> tuple[bool, Array]:
     """Update the basis if the basis + [op] matrix is full rank."""
     new_basis = basis.at[size].set(op)
     svals = jnp.linalg.svdvals(new_basis.reshape(basis.shape[:1] + (-1,)))
     rank = jnp.sum(jnp.logical_not(jnp.isclose(svals, 0.)).astype(int))
     fullrank = jnp.equal(rank, size + 1)
     basis = jax.lax.select(fullrank, new_basis, basis)
-    return basis, size + fullrank.astype(int)
-
-
-@partial(jax.jit, static_argnames=['algorithm'])
-def _compute_commutator(
-    idx_gen: int,
-    idx_op: int,
-    generators: Array,
-    basis: Array,
-    *aux,
-    algorithm: Algorithms
-) -> Array:
-    match algorithm:
-        case Algorithms.GS_DIRECT:
-            op1, op2 = generators[idx_gen], basis[idx_op]
-        case Algorithms.GRAM_SCHMIDT:
-            op1, op2 = aux[0][idx_gen], aux[0][idx_op]
-        case Algorithms.MATRIX_INV:
-            op1, op2 = generators[idx_gen], basis[idx_op]
-        case Algorithms.SVD:
-            op1, op2 = generators[idx_gen], basis[idx_op]
-
-    return normalize(commutator(op1, op2))
+    return fullrank, basis
 
 
 @partial(jax.jit, static_argnames=['algorithm'])
 def _update_basis(
     op: Array,
-    basis: Array,
     basis_size: int,
-    *aux,
+    basis: Array,
+    aux: list,
     algorithm: Algorithms
-) -> tuple:
+) -> tuple[int, Array, list]:
     match algorithm:
         case Algorithms.GS_DIRECT:
-            update = _update_gram_schmidt
+            update = _update_gs_direct
         case Algorithms.GRAM_SCHMIDT:
-            update = _update_gs_commlist
+            update = _update_gram_schmidt
         case Algorithms.MATRIX_INV:
             update = _update_matrix_inv
         case Algorithms.SVD:
             update = _update_svd
 
-    def no_update(_, _basis, _basis_size, *_aux):
-        return _basis, _basis_size, *_aux
+    def no_update(_, _basis_size, _basis, *_aux):
+        return False, _basis, *_aux
 
     # If non-null, call the updater function
-    return jax.lax.cond(
+    updated, basis, *aux = jax.lax.cond(
         jnp.allclose(op, 0.),
         no_update,
         update,
-        op, basis, basis_size, *aux
+        op, basis_size, basis, *aux
     )
+    basis_size = jax.lax.select(updated, basis_size + 1, basis_size)
+    return basis_size, basis, list(aux)
 
 
 def get_loop_body(algorithm: Algorithms, log_level: Optional[int] = None):
@@ -180,7 +159,7 @@ def get_loop_body(algorithm: Algorithms, log_level: Optional[int] = None):
     @jax.jit
     def loop_body(val: tuple) -> tuple:
         """Compute the commutator and update the basis with orthogonal components."""
-        idx_gen, idx_op, generators, basis, basis_size, *aux = val
+        idx_gen, idx_op, basis_size, generators, basis, aux = val
 
         if log_level <= logging.INFO:
             icomm = idx_op * generators.shape[0] + idx_gen
@@ -194,49 +173,16 @@ def get_loop_body(algorithm: Algorithms, log_level: Optional[int] = None):
                 lambda: None
             )
 
-        comm = _compute_commutator(idx_gen, idx_op, generators, basis, *aux, algorithm=algorithm)
-        basis, basis_size, *aux = _update_basis(comm, basis, basis_size, *aux, algorithm=algorithm)
+        comm = normalize(commutator(generators[idx_gen], basis[idx_op]))
+        basis_size, basis, aux = _update_basis(comm, basis_size, basis, aux, algorithm=algorithm)
 
         # Compute the next indices
         idx_gen = (idx_gen + 1) % generators.shape[0]
         idx_op = jax.lax.select(jnp.equal(idx_gen, 0), idx_op + 1, idx_op)
 
-        return idx_gen, idx_op, generators, basis, basis_size, *aux
+        return idx_gen, idx_op, basis_size, generators, basis, aux
 
     return loop_body
-
-
-def _resize_basis(
-    basis: Array,
-    size: int,
-    max_size: int
-) -> tuple[Array]:
-    new_shape = (max_size,) + basis.shape[1:]
-    return (jnp.resize(basis, new_shape).at[size:].set(0.),)
-
-
-def _resize_basis_and_x(
-    basis: Array,
-    size: int,
-    max_size: int,
-    xmat: Array,
-    xinv: Array
-) -> tuple[Array, Array, Array]:
-    basis, = _resize_basis(basis, size, max_size)
-    xmat = jnp.eye(max_size, dtype=xmat.dtype).at[:size, :size].set(xmat)
-    xinv = jnp.linalg.inv(xmat)
-    return (basis, xmat, xinv)
-
-
-def _resize_basis_and_commlist(
-    basis: Array,
-    size: int,
-    max_size: int,
-    nested_commutators: Array
-) -> tuple[Array, Array]:
-    basis, = _resize_basis(basis, size, max_size)
-    nested_commutators = jnp.resize(nested_commutators, basis.shape).at[size:].set(0.)
-    return (basis, nested_commutators)
 
 
 def _lie_basis(
@@ -252,10 +198,10 @@ def _lie_basis(
     max_size = ((ops.shape[0] - 1) // BASIS_ALLOC_UNIT + 1) * BASIS_ALLOC_UNIT
     first_op = normalize(ops[0])
 
-    # Set the aux arrays and resize function
+    # Set the aux arrays
     match algorithm:
         case Algorithms.GRAM_SCHMIDT:
-            # Unorthogonalized commutator list
+            # Orthonormal basis
             aux = [_zeros_with_entries(max_size, first_op[None, ...])]
         case Algorithms.MATRIX_INV:
             # X matrix and inverse
@@ -269,7 +215,7 @@ def _lie_basis(
     basis = _zeros_with_entries(ops.shape[0], first_op[None, ...])
     size = 1
     for op in ops[1:]:
-        basis, size, *aux = _update_basis(normalize(op), basis, size, *aux, algorithm=algorithm)
+        size, basis, aux = _update_basis(normalize(op), size, basis, aux, algorithm=algorithm)
     basis = basis[:size]
 
     return basis, aux
@@ -290,6 +236,27 @@ def _truncate_arrays(
         case Algorithms.MATRIX_INV:
             aux[0] = np.asarray(aux[0][:size, :size])
             aux[1] = np.asarray(aux[1][:size, :size])
+
+    return basis, aux
+
+
+def _resize_arrays(
+    basis: Array,
+    aux: list,
+    size: int,
+    max_size: int,
+    *,
+    algorithm: Algorithms = Algorithms.GS_DIRECT
+):
+    """Expand the arrays to a new size."""
+    new_shape = (max_size,) + basis.shape[1:]
+    basis = jnp.resize(basis, new_shape).at[size:].set(0.)
+
+    match algorithm:
+        case Algorithms.GRAM_SCHMIDT:
+            aux = [jnp.resize(aux[0], basis.shape).at[size:].set(0.)]
+        case Algorithms.MATRIX_INV:
+            aux = [jnp.eye(max_size, dtype=mat.dtype).at[:size, :size].set(mat) for mat in aux]
 
     return basis, aux
 
@@ -341,18 +308,9 @@ def lie_closure(
     generators, aux = _lie_basis(generators, algorithm=algorithm)
     LOG.info('Number of independent generators: %d', generators.shape[0])
 
-    # Fix the main loop function with algorithm
+    # Get the main loop function for the algorithm
     main_loop_body = get_loop_body(algorithm)
     max_dim = max_dim or generators.shape[-1] ** 2 - 1
-
-    # Set the resize function
-    match algorithm:
-        case Algorithms.GRAM_SCHMIDT:
-            resize = _resize_basis_and_commlist
-        case Algorithms.MATRIX_INV:
-            resize = _resize_basis_and_x
-        case _:
-            resize = _resize_basis
 
     # Initialize the basis
     basis_size = generators.shape[0]
@@ -363,10 +321,10 @@ def lie_closure(
     idx_gens, idx_ops = np.array(
         [[ig, io] for io in range(generators.shape[0]) for ig in range(io)]
     ).T
-    generators, basis, basis_size, *aux = jax.lax.fori_loop(
+    basis_size, generators, basis, aux = jax.lax.fori_loop(
         0, len(idx_gens),
         lambda j, val: val[:2] + main_loop_body((val[0][j], val[1][j], *val[2:]))[2:],
-        (idx_gens, idx_ops, generators, basis, basis_size, *aux)
+        (idx_gens, idx_ops, basis_size, generators, basis, aux)
     )[2:]
 
     # This would be stupid but possible
@@ -384,21 +342,20 @@ def lie_closure(
         main_loop_start = time.time()
         # Main (inner) loop: iteratively compute the next commutator and update the basis based on
         # the current one
-        idx_gen, idx_op, generators, basis, new_size, *aux = jax.lax.while_loop(
+        idx_gen, idx_op, new_size, generators, basis, aux = jax.lax.while_loop(
             lambda val: jnp.logical_not(
-                (val[1] == val[4])  # idx_op == new_size -> commutator exhausted
-                | (val[4] == max_dim)  # new_size == max_dim -> reached max dim
-                | (val[4] == basis.shape[0])  # new_size == array size -> need reallocation
+                (val[1] == val[2])  # idx_op == new_size -> commutator exhausted
+                | (val[2] == max_dim)  # new_size == max_dim -> reached max dim
+                | (val[2] == val[4].shape[0])  # new_size == array size -> need reallocation
             ),
             main_loop_body,
-            (idx_gen, idx_op, generators, basis, basis_size, *aux)
+            (idx_gen, idx_op, basis_size, generators, basis, aux)
         )
 
         LOG.info('Found %d new ops in %.2fs',
                  new_size - basis_size, time.time() - main_loop_start)
 
         basis_size = new_size
-
         if idx_op == basis_size or basis_size == max_dim:
             # Computed all commutators
             break
@@ -407,7 +364,7 @@ def lie_closure(
         LOG.debug('Resizing basis array to %d', max_size + BASIS_ALLOC_UNIT)
 
         max_size += BASIS_ALLOC_UNIT
-        basis, *aux = resize(basis, basis_size, max_size, *aux)
+        basis, aux = _resize_arrays(basis, aux, basis_size, max_size, algorithm=algorithm)
 
     basis, aux = _truncate_arrays(basis, aux, basis_size, algorithm=algorithm)
     if return_aux:
