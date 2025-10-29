@@ -179,6 +179,19 @@ def _lie_basis(
     return basis, aux
 
 
+def _truncate_arrays(
+    basis: np.ndarray,
+    aux: list,
+    size: int,
+    *,
+    algorithm: Algorithms = Algorithms.GS_DIRECT
+):
+    basis = basis[:size]
+    if algorithm == Algorithms.GRAM_SCHMIDT:
+        aux[0] = aux[0][:size]
+    return basis, aux
+
+
 def lie_basis(
     ops: SparsePauliSumArray,
     *,
@@ -236,23 +249,19 @@ def lie_closure(
 
     basis = copy.deepcopy(generators)
 
-    if algorithm == Algorithms.GRAM_SCHMIDT:
-        sources = (aux[0], aux[0])
-    else:
-        sources = (basis, generators)
-
     # Compute the commutators among elements of source[1]
     for iop1 in range(num_gen):
         for iop2 in range(iop1):
-            comm = sps_commutator_fast(sources[1][iop1], sources[1][iop2], True)
+            comm = sps_commutator_fast(generators[iop1], generators[iop2], True)
             if_independent_update(comm, basis, aux, LOG.getEffectiveLevel())
 
     max_dim = max_dim or 4 ** generators.num_qubits - 1
 
     if len(basis) >= max_dim:
+        basis, aux = _truncate_arrays(basis, aux, max_dim)
         if return_aux:
             return basis, aux
-        return basis[:max_dim]
+        return basis
 
     if max_workers is not None:
         max_workers = min(max_workers, cpu_count())
@@ -261,10 +270,10 @@ def lie_closure(
         futures = set()
 
         def calculate_commutators(start):
-            for iopl in range(start, len(sources[0])):
-                lhs = sources[0][iopl]
+            for iopl in range(start, len(basis)):
+                lhs = basis[iopl]
                 for iopr in range(num_gen):
-                    rhs = sources[1][iopr]
+                    rhs = generators[iopr]
                     futures.add(
                         executor.submit(_sps_commutator_fast,
                                         lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs,
@@ -303,14 +312,18 @@ def lie_closure(
 
             main_loop_start = time.time()
             old_dim = len(basis)
-            basis.indices, basis.coeffs, independent_elements = _update_loop(
-                result_indices, result_coeffs, basis.indices, basis.coeffs,
+            if algorithm == Algorithms.GS_DIRECT:
+                out = basis
+            else:
+                out = aux[0]
+            out.indices, out.coeffs, independent_elements = _update_loop(
+                result_indices, result_coeffs, out.indices, out.coeffs,
                 basis.ptrs, max_dim, LOG.getEffectiveLevel()
             )
-            new_dim = len(basis)
+            new_dim = len(out)
             if algorithm == Algorithms.GRAM_SCHMIDT:
                 for ires in independent_elements:
-                    aux[0].append(result_indices[ires], result_coeffs[ires])
+                    basis.append(result_indices[ires], result_coeffs[ires])
 
             if LOG.getEffectiveLevel() <= logging.DEBUG:
                 LOG.debug('Found %d new ops in %.2fs',
