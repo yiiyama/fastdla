@@ -10,7 +10,7 @@ import numpy as np
 import jax
 from jax import Array
 import jax.numpy as jnp
-from fastdla.linalg.matrix_ops import _commutator_norm, _innerprod, _normalize, _orthogonalize
+from fastdla.linalg.matrix_ops import commutator, innerprod, normalize, orthogonalize
 
 LOG = logging.getLogger(__name__)
 BASIS_ALLOC_UNIT = 1024
@@ -26,8 +26,8 @@ class Algorithms(IntEnum):
 
 @jax.jit
 def _has_orthcomp(op: Array, basis: Array) -> tuple[bool, Array]:
-    orth = _orthogonalize(_normalize(_orthogonalize(op, basis)), basis)
-    norm = jnp.sqrt(_innerprod(orth, orth))
+    orth = orthogonalize(normalize(orthogonalize(op, basis)), basis)
+    norm = jnp.sqrt(innerprod(orth, orth))
     return jnp.isclose(norm, 1., rtol=1.e-5), orth / norm
 
 
@@ -90,7 +90,7 @@ def _update_matrix_inv(
         return jnp.logical_not(jnp.allclose(residual, 0.)), _pidag_q
 
     # Compute the Π†Q vector
-    pidag_q = _innerprod(basis, op)
+    pidag_q = innerprod(basis, op)
     # If pidag_q is non-null, compute the residual
     is_independent, new_xcol = jax.lax.cond(
         jnp.allclose(pidag_q, 0.),
@@ -147,7 +147,7 @@ def _compute_commutator(
         case Algorithms.SVD:
             op1, op2 = generators[idx_gen], basis[idx_op]
 
-    return _commutator_norm(op1, op2)
+    return normalize(commutator(op1, op2))
 
 
 @partial(jax.jit, static_argnames=['algorithm'])
@@ -256,7 +256,7 @@ def _lie_basis(
         raise ValueError('Cannot determine the basis of null space')
 
     max_size = ((ops.shape[0] - 1) // BASIS_ALLOC_UNIT + 1) * BASIS_ALLOC_UNIT
-    first_op = _normalize(ops[0])
+    first_op = normalize(ops[0])
 
     # Set the aux arrays and resize function
     match algorithm:
@@ -275,7 +275,7 @@ def _lie_basis(
     basis = _zeros_with_entries(ops.shape[0], first_op[None, ...])
     size = 1
     for op in ops[1:]:
-        basis, size, *aux = _update_basis(_normalize(op), basis, size, *aux, algorithm=algorithm)
+        basis, size, *aux = _update_basis(normalize(op), basis, size, *aux, algorithm=algorithm)
     basis = basis[:size]
 
     return basis, aux
