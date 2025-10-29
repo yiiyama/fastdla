@@ -1,7 +1,6 @@
 # pylint: disable=unused-argument
 """Implementation of the Lie closure generator using JAX matrices."""
 from collections.abc import Sequence
-from enum import IntEnum
 from functools import partial
 import logging
 from typing import Optional
@@ -11,17 +10,10 @@ import jax
 from jax import Array
 import jax.numpy as jnp
 from fastdla.linalg.matrix_ops import commutator, innerprod, normalize, orthogonalize
+from fastdla._lie_closure_impl.algorithms import Algorithms
 
 LOG = logging.getLogger(__name__)
 BASIS_ALLOC_UNIT = 1024
-
-
-class Algorithms(IntEnum):
-    """Algorithm for linear independence check and basis update."""
-    GRAM_SCHMIDT = 1
-    GS_COMMLIST = 2
-    MATRIX_INV = 3
-    SVD = 4
 
 
 @jax.jit
@@ -138,9 +130,9 @@ def _compute_commutator(
     algorithm: Algorithms
 ) -> Array:
     match algorithm:
-        case Algorithms.GRAM_SCHMIDT:
+        case Algorithms.GS_DIRECT:
             op1, op2 = generators[idx_gen], basis[idx_op]
-        case Algorithms.GS_COMMLIST:
+        case Algorithms.GRAM_SCHMIDT:
             op1, op2 = aux[0][idx_gen], aux[0][idx_op]
         case Algorithms.MATRIX_INV:
             op1, op2 = generators[idx_gen], basis[idx_op]
@@ -159,9 +151,9 @@ def _update_basis(
     algorithm: Algorithms
 ) -> tuple:
     match algorithm:
-        case Algorithms.GRAM_SCHMIDT:
+        case Algorithms.GS_DIRECT:
             update = _update_gram_schmidt
-        case Algorithms.GS_COMMLIST:
+        case Algorithms.GRAM_SCHMIDT:
             update = _update_gs_commlist
         case Algorithms.MATRIX_INV:
             update = _update_matrix_inv
@@ -180,36 +172,38 @@ def _update_basis(
     )
 
 
-@partial(jax.jit, static_argnames=['algorithm', 'log_level'])
-def _main_loop_body(
-    val: tuple,
-    *,
-    algorithm: Algorithms,
-    log_level: int = 0
-) -> tuple:
-    """Compute the commutator and update the basis with orthogonal components."""
-    idx_gen, idx_op, generators, basis, basis_size, *aux = val
+def get_loop_body(algorithm: Algorithms, log_level: Optional[int] = None):
+    """Make the compiled loop body function using the given algorithm."""
+    if log_level is None:
+        log_level = LOG.getEffectiveLevel()
 
-    if log_level <= logging.INFO:
-        icomm = idx_op * generators.shape[0] + idx_gen
-        jax.lax.cond(
-            jnp.equal(icomm % 2000, 0),
-            lambda: jax.debug.print('Basis size {size}; {icomm}th/{total} commutator'
-                                    ' [g[{idx_gen}], b[{idx_new}]]',
-                                    size=basis_size, icomm=icomm,
-                                    total=basis_size * generators.shape[0],
-                                    idx_gen=idx_gen, idx_new=idx_op),
-            lambda: None
-        )
+    @jax.jit
+    def loop_body(val: tuple) -> tuple:
+        """Compute the commutator and update the basis with orthogonal components."""
+        idx_gen, idx_op, generators, basis, basis_size, *aux = val
 
-    comm = _compute_commutator(idx_gen, idx_op, generators, basis, *aux, algorithm=algorithm)
-    basis, basis_size, *aux = _update_basis(comm, basis, basis_size, *aux, algorithm=algorithm)
+        if log_level <= logging.INFO:
+            icomm = idx_op * generators.shape[0] + idx_gen
+            jax.lax.cond(
+                jnp.equal(icomm % 2000, 0),
+                lambda: jax.debug.print('Basis size {size}; {icomm}th/{total} commutator'
+                                        ' [g[{idx_gen}], b[{idx_new}]]',
+                                        size=basis_size, icomm=icomm,
+                                        total=basis_size * generators.shape[0],
+                                        idx_gen=idx_gen, idx_new=idx_op),
+                lambda: None
+            )
 
-    # Compute the next indices
-    idx_gen = (idx_gen + 1) % generators.shape[0]
-    idx_op = jax.lax.select(jnp.equal(idx_gen, 0), idx_op + 1, idx_op)
+        comm = _compute_commutator(idx_gen, idx_op, generators, basis, *aux, algorithm=algorithm)
+        basis, basis_size, *aux = _update_basis(comm, basis, basis_size, *aux, algorithm=algorithm)
 
-    return idx_gen, idx_op, generators, basis, basis_size, *aux
+        # Compute the next indices
+        idx_gen = (idx_gen + 1) % generators.shape[0]
+        idx_op = jax.lax.select(jnp.equal(idx_gen, 0), idx_op + 1, idx_op)
+
+        return idx_gen, idx_op, generators, basis, basis_size, *aux
+
+    return loop_body
 
 
 def _resize_basis(
@@ -248,7 +242,7 @@ def _resize_basis_and_commlist(
 def _lie_basis(
     ops: Sequence[np.ndarray],
     *,
-    algorithm: Algorithms = Algorithms.GRAM_SCHMIDT
+    algorithm: Algorithms = Algorithms.GS_DIRECT
 ) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
     ops = jnp.array(ops)
 
@@ -260,7 +254,7 @@ def _lie_basis(
 
     # Set the aux arrays and resize function
     match algorithm:
-        case Algorithms.GS_COMMLIST:
+        case Algorithms.GRAM_SCHMIDT:
             # Unorthogonalized commutator list
             aux = [_zeros_with_entries(max_size, first_op[None, ...])]
         case Algorithms.MATRIX_INV:
@@ -281,78 +275,79 @@ def _lie_basis(
     return basis, aux
 
 
+def _truncate_arrays(
+    basis: np.ndarray,
+    aux: list,
+    size: int,
+    *,
+    algorithm: Algorithms = Algorithms.GS_DIRECT
+):
+    """Truncate the basis and auxiliary arrays to the given size."""
+    basis = np.asarray(basis[:size])
+    match algorithm:
+        case Algorithms.GRAM_SCHMIDT:
+            aux[0] = np.asarray(aux[0][:size])
+        case Algorithms.MATRIX_INV:
+            aux[0] = np.asarray(aux[0][:size, :size])
+            aux[1] = np.asarray(aux[1][:size, :size])
+
+    return basis, aux
+
+
 def lie_basis(
     ops: Sequence[np.ndarray],
     *,
-    keep_original: bool = False,
-    algorithm: Algorithms = Algorithms.GRAM_SCHMIDT
-) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
+    algorithm: Algorithms = Algorithms.GS_DIRECT,
+    return_aux: bool = False
+) -> np.ndarray | tuple[np.ndarray, list]:
     """Identify a basis for the linear space spanned by ops.
 
     Args:
         ops: Lie algebra elements whose span to calculate the basis for.
-        keep_original: Whether the returned array of Lie algebra elements should contain the
-            original (normalized) operators. If False, the orthonormalized basis used internally in
-            the algorithm is returned.
-        algorithm: Algorithm for linear-independence check and basis update. In general there is no
-            need to use values other than GRAM_SCHMIDT; this feature was used for demonstrations in
-            arXiv:2506.01120.
+        algorithm: Algorithm to use for linear independence check and basis update.
+        return_aux: Whether to return the auxiliary objects together with the main output.
 
     Returns:
-        A list of linearly independent ops and an orthonormal basis if algorithm==GS_COMMLIST,
-        otherwise only the orthonormal basis.
+        A list of linearly independent ops. If return_aux=True, a list of auxiliary objects
+        dependent on the algorithm is returned in addition.
     """
-    if keep_original:
-        if algorithm not in (Algorithms.GRAM_SCHMIDT, Algorithms.GS_COMMLIST):
-            raise ValueError('keep_original=True is only valid for GS algorithm')
-        algorithm = Algorithms.GS_COMMLIST
-
     basis, aux = _lie_basis(ops, algorithm=algorithm)
-    if algorithm == Algorithms.GS_COMMLIST:
-        return basis, aux[0]
+    basis, aux = _truncate_arrays(basis, aux, basis.shape[0], algorithm=algorithm)
+    if return_aux:
+        return basis, aux
     return basis
 
 
 def lie_closure(
     generators: Sequence[np.ndarray],
     *,
-    keep_original: bool = False,
     max_dim: Optional[int] = None,
-    algorithm: Algorithms = Algorithms.GRAM_SCHMIDT
-) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
+    algorithm: Algorithms = Algorithms.GS_DIRECT,
+    return_aux: bool = False
+) -> np.ndarray | tuple[np.ndarray, list]:
     """Compute the Lie closure of given generators.
 
     Args:
         generators: Lie algebra elements to compute the closure from.
-        keep_original: Whether the returned array of Lie algebra elements should contain the
-            original (normalized) generators and their actual nested commutators. If False, the
-            orthonormalized basis used internally in the algorithm is returned.
         max_dim: Cutoff for the dimension of the Lie closure. If set, the algorithm may be halted
             before a full closure is obtained.
-        algorithm: Algorithm for linear-independence check and basis update. In general there is no
-            need to use values other than GRAM_SCHMIDT; this feature was used for demonstrations in
-            arXiv:2506.01120.
+        algorithm: Algorithm to use for linear independence check and basis update.
+        return_aux: Whether to return the auxiliary objects together with the main output.
 
     Returns:
-        A list of linearly independent nested commutators and the orthonormal basis if
-        algorithm==GS_COMMLIST, otherwise only the orthonormal basis.
+        A basis of the Lie algebra spanned by the nested commutators of the generators. If
+        return_aux=True, a list of auxiliary objects is returned in addition.
     """
-    if keep_original:
-        if algorithm not in (Algorithms.GRAM_SCHMIDT, Algorithms.GS_COMMLIST):
-            raise ValueError('keep_original=True is only valid for GS algorithm')
-        algorithm = Algorithms.GS_COMMLIST
-
     generators, aux = _lie_basis(generators, algorithm=algorithm)
     LOG.info('Number of independent generators: %d', generators.shape[0])
 
     # Fix the main loop function with algorithm
-    main_loop_body = partial(_main_loop_body, algorithm=algorithm,
-                             log_level=LOG.getEffectiveLevel())
+    main_loop_body = get_loop_body(algorithm)
     max_dim = max_dim or generators.shape[-1] ** 2 - 1
 
     # Set the resize function
     match algorithm:
-        case Algorithms.GS_COMMLIST:
+        case Algorithms.GRAM_SCHMIDT:
             resize = _resize_basis_and_commlist
         case Algorithms.MATRIX_INV:
             resize = _resize_basis_and_x
@@ -376,9 +371,10 @@ def lie_closure(
 
     # This would be stupid but possible
     if basis_size >= max_dim:
-        if algorithm == Algorithms.GS_COMMLIST:
-            return np.asarray(aux[0][:max_dim]), np.asarray(basis[:max_dim])
-        return np.asarray(basis[:max_dim])
+        basis, aux = _truncate_arrays(basis, aux, basis_size, algorithm=algorithm)
+        if return_aux:
+            return basis, aux
+        return basis
 
     # Main loop: generate nested commutators
     idx_gen = 0
@@ -413,6 +409,7 @@ def lie_closure(
         max_size += BASIS_ALLOC_UNIT
         basis, *aux = resize(basis, basis_size, max_size, *aux)
 
-    if algorithm == Algorithms.GS_COMMLIST:
-        return np.asarray(aux[0][:basis_size]), np.asarray(basis[:basis_size])
-    return np.asarray(basis[:basis_size])
+    basis, aux = _truncate_arrays(basis, aux, basis_size, algorithm=algorithm)
+    if return_aux:
+        return basis, aux
+    return basis

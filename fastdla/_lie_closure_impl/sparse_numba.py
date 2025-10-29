@@ -10,6 +10,7 @@ from numba import njit, objmode
 from fastdla.sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
 from fastdla.sps_fast import (abs_square, sps_commutator_fast, _uniquify_fast, _sps_commutator_fast,
                               _sps_dot_fast, _spsarray_append_fast)
+from fastdla._lie_closure_impl.algorithms import Algorithms
 
 LOG = logging.getLogger(__name__)
 BASIS_ALLOC_UNIT = 1024
@@ -99,14 +100,14 @@ def _if_independent_update(
 def if_independent_update(
     op: SparsePauliSum,
     basis: SparsePauliSumArray,
-    unorth_basis: SparsePauliSumArray | None,
+    aux: list[SparsePauliSumArray] | None,
     log_level: int
 ) -> bool:
     updated, basis.indices, basis.coeffs = _if_independent_update(
         op.indices, op.coeffs, basis.indices, basis.coeffs, basis.ptrs, log_level
     )
-    if updated and unorth_basis is not None:
-        unorth_basis.append(op)
+    if updated and aux:
+        aux[0].append(op)
     return updated
 
 
@@ -159,52 +160,54 @@ def _update_loop(
 
 def _lie_basis(
     ops: SparsePauliSumArray,
-    keep_original: bool
+    *,
+    algorithm: Algorithms = Algorithms.GS_DIRECT
 ):
     if len(ops) == 0:
         raise ValueError('Cannot determine the basis of null space')
 
     # Allocate the basis and X arrays and compute the initial basis
     basis = SparsePauliSumArray([ops[0].normalize()])
-    unorth_basis = None
-    if keep_original:
-        unorth_basis = SparsePauliSumArray([basis[0]])
+    aux = []
+    if algorithm == Algorithms.GRAM_SCHMIDT:
+        aux.append(SparsePauliSumArray([basis[0]]))
 
     for iop in range(1, len(ops)):
         op = ops[iop].normalize()
-        if_independent_update(op, basis, unorth_basis, LOG.getEffectiveLevel())
+        if_independent_update(op, basis, aux, LOG.getEffectiveLevel())
 
-    return basis, unorth_basis
+    return basis, aux
 
 
 def lie_basis(
     ops: SparsePauliSumArray,
     *,
-    keep_original: bool = False
-) -> tuple[np.ndarray, np.ndarray] | np.ndarray:
-    """Identify a basis for the linear space spanned by ops.
+    algorithm: Algorithms = Algorithms.GS_DIRECT,
+    return_aux: bool = False
+) -> SparsePauliSumArray | tuple[SparsePauliSumArray, list]:
+    """Compute a basis of the linear space spanned by ops.
 
     Args:
         ops: Lie algebra elements whose span to calculate the basis for.
-        keep_original: Whether the returned array of Lie algebra elements should contain the
-            original (normalized) operators. If False, the orthonormalized basis used internally in
-            the algorithm is returned.
+        algorithm: Algorithm to use for linear independence check and basis update.
+        return_aux: Whether to return the auxiliary objects together with the main output.
 
     Returns:
-        A list of linearly independent ops and an orthonormal basis if keep_original=True,
-        otherwise only the orthonormal basis.
+        A list of linearly independent ops. If return_aux=True, a list of auxiliary objects
+        dependent on the algorithm is returned in addition.
     """
-    basis, unorth_basis = _lie_basis(ops, keep_original)
-    if keep_original:
-        return basis, unorth_basis
+    basis, aux = _lie_basis(ops, algorithm=algorithm)
+    if return_aux:
+        return basis, aux
     return basis
 
 
 def lie_closure(
     generators: SparsePauliSumArray,
     *,
-    keep_original: bool = False,
     max_dim: Optional[int] = None,
+    algorithm: Algorithms = Algorithms.GS_DIRECT,
+    return_aux: bool = False,
     min_tasks: int = 0,
     max_workers: Optional[int] = None
 ) -> tuple[SparsePauliSumArray, SparsePauliSumArray] | SparsePauliSumArray:
@@ -212,26 +215,29 @@ def lie_closure(
 
     Args:
         generators: Lie algebra elements to compute the closure from.
-        keep_original: Whether to keep the original (normalized) generator elements. If False, only
-            orthonormalized Lie algebra elements are kept in memory to speed up the calculation.
         max_dim: Cutoff for the dimension of the Lie closure. If set, the algorithm may be halted
             before a full closure is obtained.
+        algorithm: Algorithm to use for linear independence check and basis update.
+        return_aux: Whether to return the auxiliary objects together with the main output.
         min_tasks: Minimum number of commutator calculations to complete before starting a new batch
             of calculations.
         max_workers: Maximun number of threads to use to parallelize the commutator calculations.
 
     Returns:
-        A list of linearly independent nested commutators and the orthonormal basis if
-        keep_original=True, otherwise only the orthonormal basis.
+        A basis of the Lie algebra spanned by the nested commutators of the generators. If
+        return_aux=True, a list of auxiliary objects is returned in addition.
     """
-    generators, unorth_basis = _lie_basis(generators, keep_original)
+    if algorithm not in (Algorithms.GS_DIRECT, Algorithms.GRAM_SCHMIDT):
+        raise NotImplementedError(f'Algorithm {algorithm} is not implemented in sparse_numba')
+
+    generators, aux = _lie_basis(generators, algorithm=algorithm)
     num_gen = len(generators)
     LOG.info('Number of independent generators: %d', num_gen)
 
     basis = copy.deepcopy(generators)
 
-    if keep_original:
-        sources = (unorth_basis, unorth_basis)
+    if algorithm == Algorithms.GRAM_SCHMIDT:
+        sources = (aux[0], aux[0])
     else:
         sources = (basis, generators)
 
@@ -239,15 +245,13 @@ def lie_closure(
     for iop1 in range(num_gen):
         for iop2 in range(iop1):
             comm = sps_commutator_fast(sources[1][iop1], sources[1][iop2], True)
-            updated = if_independent_update(comm, basis, unorth_basis, LOG.getEffectiveLevel())
-            if keep_original and updated:
-                unorth_basis.append(comm)
+            if_independent_update(comm, basis, aux, LOG.getEffectiveLevel())
 
     max_dim = max_dim or 4 ** generators.num_qubits - 1
 
     if len(basis) >= max_dim:
-        if keep_original:
-            return unorth_basis[:max_dim], basis[:max_dim]
+        if return_aux:
+            return basis, aux
         return basis[:max_dim]
 
     if max_workers is not None:
@@ -304,9 +308,9 @@ def lie_closure(
                 basis.ptrs, max_dim, LOG.getEffectiveLevel()
             )
             new_dim = len(basis)
-            if keep_original:
+            if algorithm == Algorithms.GRAM_SCHMIDT:
                 for ires in independent_elements:
-                    unorth_basis.append(result_indices[ires], result_coeffs[ires])
+                    aux[0].append(result_indices[ires], result_coeffs[ires])
 
             if LOG.getEffectiveLevel() <= logging.DEBUG:
                 LOG.debug('Found %d new ops in %.2fs',
@@ -323,6 +327,6 @@ def lie_closure(
                 num_added = (new_dim + old_dim - 1) * (new_dim - old_dim) // 2
                 LOG.info('Adding %d commutators; %d more to be evaluated', num_added, len(futures))
 
-    if keep_original:
-        return unorth_basis, basis
+    if return_aux:
+        return basis, aux
     return basis

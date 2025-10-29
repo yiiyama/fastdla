@@ -4,6 +4,7 @@ from collections.abc import Sequence
 import logging
 from typing import Any, Optional
 from fastdla.sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
+from fastdla._lie_closure_impl.algorithms import Algorithms
 
 LOG = logging.getLogger(__name__)
 AlgebraElement = Any
@@ -13,20 +14,20 @@ Basis = Sequence[AlgebraElement]
 def lie_basis(
     ops: Basis,
     *,
-    keep_original: bool = False,
+    algorithm: Algorithms = Algorithms.GS_DIRECT,
+    return_aux: bool = False,
     **kwargs
-) -> tuple[Basis, Basis] | Basis:
+) -> Basis | tuple[Basis, list]:
     r"""Compute a basis of the linear space spanned by ops.
 
     Args:
-        generators: Lie algebra elements whose span to calculate the basis for.
-        keep_original: Whether the returned array of Lie algebra elements should contain the
-            original (normalized) generators. If False, the orthonormalized basis used internally in
-            the algorithm is returned.
+        ops: Lie algebra elements whose span to calculate the basis for.
+        algorithm: Algorithm to use for linear independence check and basis update.
+        return_aux: Whether to return the auxiliary objects together with the main output.
 
     Returns:
-        A list of linearly independent ops and an orthonormal basis if keep_original=True,
-        otherwise only the orthonormal basis.
+        A list of linearly independent ops. If return_aux=True, a list of auxiliary objects
+        dependent on the algorithm is returned in addition.
     """
     if isinstance(ops, list) and isinstance(ops[0], SparsePauliSum):
         ops = SparsePauliSumArray(ops)
@@ -36,14 +37,15 @@ def lie_basis(
     else:
         from fastdla._lie_closure_impl.matrix_jax import lie_basis as fn
 
-    return fn(ops, keep_original=keep_original, **kwargs)
+    return fn(ops, algorithm=algorithm, return_aux=return_aux, **kwargs)
 
 
 def lie_closure(
     generators: Any,
     *,
-    keep_original: bool = False,
     max_dim: Optional[int] = None,
+    algorithm: Algorithms = Algorithms.GS_DIRECT,
+    return_aux: bool = False,
     **kwargs
 ) -> tuple[Basis, Basis] | Basis:
     """Compute the Lie closure of given generators.
@@ -83,15 +85,14 @@ def lie_closure(
 
     Args:
         generators: Lie algebra elements to compute the closure from.
-        keep_original: Whether the returned array of Lie algebra elements should contain the
-            original (normalized) generators and their actual nested commutators. If False, the
-            orthonormalized basis used internally in the algorithm is returned.
         max_dim: Cutoff for the dimension of the Lie closure. If set, the algorithm may be halted
             before a full closure is obtained.
+        algorithm: Algorithm to use for linear independence check and basis update.
+        return_aux: Whether to return the auxiliary objects together with the main output.
 
     Returns:
-        A list of linearly independent nested commutators and the orthonormal basis if
-        keep_original=True, otherwise only the orthonormal basis.
+        A basis of the Lie algebra spanned by the nested commutators of the generators. If
+        return_aux=True, a list of auxiliary objects is returned in addition.
     """
     if isinstance(generators, list) and isinstance(generators[0], SparsePauliSum):
         generators = SparsePauliSumArray(generators)
@@ -101,4 +102,4 @@ def lie_closure(
     else:
         from fastdla._lie_closure_impl.matrix_jax import lie_closure as fn
 
-    return fn(generators, keep_original=keep_original, max_dim=max_dim, **kwargs)
+    return fn(generators, max_dim=max_dim, algorithm=algorithm, return_aux=return_aux, **kwargs)
