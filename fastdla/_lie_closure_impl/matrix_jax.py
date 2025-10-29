@@ -240,23 +240,25 @@ def _truncate_arrays(
     return basis, aux
 
 
+@partial(jax.jit, static_argnames=['max_size', 'algorithm'])
 def _resize_arrays(
     basis: Array,
     aux: list,
-    size: int,
     max_size: int,
     *,
     algorithm: Algorithms = Algorithms.GS_DIRECT
 ):
     """Expand the arrays to a new size."""
+    old_size = basis.shape[0]
     new_shape = (max_size,) + basis.shape[1:]
-    basis = jnp.resize(basis, new_shape).at[size:].set(0.)
+    basis = jnp.zeros(new_shape, dtype=basis.dtype).at[:old_size].set(basis)
 
     match algorithm:
         case Algorithms.GRAM_SCHMIDT:
-            aux = [jnp.resize(aux[0], basis.shape).at[size:].set(0.)]
+            aux = [jnp.zeros(new_shape, dtype=basis.dtype).at[:old_size].set(aux[0])]
         case Algorithms.MATRIX_INV:
-            aux = [jnp.eye(max_size, dtype=mat.dtype).at[:size, :size].set(mat) for mat in aux]
+            aux = [jnp.eye(max_size, dtype=mat.dtype).at[:old_size, :old_size].set(mat)
+                   for mat in aux]
 
     return basis, aux
 
@@ -364,7 +366,7 @@ def lie_closure(
         LOG.debug('Resizing basis array to %d', max_size + BASIS_ALLOC_UNIT)
 
         max_size += BASIS_ALLOC_UNIT
-        basis, aux = _resize_arrays(basis, aux, basis_size, max_size, algorithm=algorithm)
+        basis, aux = _resize_arrays(basis, aux, max_size, algorithm=algorithm)
 
     basis, aux = _truncate_arrays(basis, aux, basis_size, algorithm=algorithm)
     if return_aux:
