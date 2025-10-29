@@ -111,51 +111,66 @@ def if_independent_update(
     return updated
 
 
-@njit
-def _update_loop(
-    result_indices: list[np.ndarray],
-    result_coeffs: list[np.ndarray],
-    basis_indices: np.ndarray,
-    basis_coeffs: np.ndarray,
-    basis_ptrs: list[int],
+def get_update_loop(
     max_dim: int,
-    log_level: int
-) -> tuple[np.ndarray, np.ndarray, list[int]]:
-    """Loop through the calculated commutators and update the basis with independent elements."""
-    independent_elements = []
-    # Commutator results are all non-empty and sorted by the indices array so that identical results
-    # can be filtered out before invoking the linear dependence check
-    prev_indices = np.array([-1], dtype=np.uint64)
-    prev_coeffs_conj = None
+    print_every: Optional[int] = None
+):
+    log_level = LOG.getEffectiveLevel()
+    if print_every is None:
+        if log_level <= logging.DEBUG:
+            print_every = 1
+        elif log_level <= logging.INFO:  # 20
+            print_every = log_level * 100
+        else:
+            print_every = -1
 
-    num_results = len(result_indices)
-    for ires in range(num_results):
-        if log_level <= logging.INFO and ires % 2000 == 0:
-            la_dim = len(basis_ptrs) - 1
-            with objmode():
-                LOG.info('Processing commutator %d/%d. Lie algebra dim %d',
-                         ires, num_results, la_dim)
+    @njit
+    def update_loop(
+        result_indices: list[np.ndarray],
+        result_coeffs: list[np.ndarray],
+        basis_indices: np.ndarray,
+        basis_coeffs: np.ndarray,
+        basis_ptrs: list[int]
+    ) -> tuple[np.ndarray, np.ndarray, list[int]]:
+        """
+        Loop through the calculated commutators and update the basis with independent elements.
+        """
+        independent_elements = []
+        # Commutator results are all non-empty and sorted by the indices array so that identical
+        # results can be filtered out before invoking the linear dependence check
+        prev_indices = np.array([-1], dtype=np.uint64)
+        prev_coeffs_conj = None
 
-        indices = result_indices[ires]
-        coeffs = result_coeffs[ires]
-        # Skip if this result is identical to the previous one
-        if (prev_indices.shape[0] == indices.shape[0] and np.all(prev_indices == indices)
-                and np.isclose(np.abs(prev_coeffs_conj @ coeffs), 1.)):
-            continue
+        num_results = len(result_indices)
+        for ires in range(num_results):
+            if print_every > 0 and ires % print_every == 0:
+                la_dim = len(basis_ptrs) - 1
+                with objmode():
+                    LOG.log(log_level, 'Processing commutator %d/%d. Lie algebra dim %d',
+                            ires, num_results, la_dim)
 
-        prev_indices = indices
-        prev_coeffs_conj = coeffs.conjugate()
+            indices = result_indices[ires]
+            coeffs = result_coeffs[ires]
+            # Skip if this result is identical to the previous one
+            if (prev_indices.shape[0] == indices.shape[0] and np.all(prev_indices == indices)
+                    and np.isclose(np.abs(prev_coeffs_conj @ coeffs), 1.)):
+                continue
 
-        # Check linear independence and update the basis_* arrays
-        updated, basis_indices, basis_coeffs = _if_independent_update(
-            indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, log_level
-        )
-        if updated:
-            independent_elements.append(ires)
-        if len(basis_ptrs) - 1 == max_dim:
-            break
+            prev_indices = indices
+            prev_coeffs_conj = coeffs.conjugate()
 
-    return basis_indices, basis_coeffs, independent_elements
+            # Check linear independence and update the basis_* arrays
+            updated, basis_indices, basis_coeffs = _if_independent_update(
+                indices, coeffs, basis_indices, basis_coeffs, basis_ptrs, log_level
+            )
+            if updated:
+                independent_elements.append(ires)
+            if len(basis_ptrs) - 1 == max_dim:
+                break
+
+        return basis_indices, basis_coeffs, independent_elements
+
+    return update_loop
 
 
 def _lie_basis(
@@ -222,7 +237,8 @@ def lie_closure(
     algorithm: Algorithms = Algorithms.GS_DIRECT,
     return_aux: bool = False,
     min_tasks: int = 0,
-    max_workers: Optional[int] = None
+    max_workers: Optional[int] = None,
+    print_every: Optional[int] = None
 ) -> tuple[SparsePauliSumArray, SparsePauliSumArray] | SparsePauliSumArray:
     """Compute the Lie closure of given generators.
 
@@ -265,6 +281,8 @@ def lie_closure(
 
     if max_workers is not None:
         max_workers = min(max_workers, cpu_count())
+
+    update_loop = get_update_loop(max_dim, print_every=print_every)
 
     with ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = set()
@@ -316,9 +334,8 @@ def lie_closure(
                 out = basis
             else:
                 out = aux[0]
-            out.indices, out.coeffs, independent_elements = _update_loop(
-                result_indices, result_coeffs, out.indices, out.coeffs,
-                basis.ptrs, max_dim, LOG.getEffectiveLevel()
+            out.indices, out.coeffs, independent_elements = update_loop(
+                result_indices, result_coeffs, out.indices, out.coeffs, basis.ptrs
             )
             new_dim = len(out)
             if algorithm == Algorithms.GRAM_SCHMIDT:
@@ -337,7 +354,7 @@ def lie_closure(
                 # Calculate the commutators between the new basis elements and all others
                 calculate_commutators(old_dim)
 
-                num_added = (new_dim + old_dim - 1) * (new_dim - old_dim) // 2
+                num_added = (new_dim - old_dim) * num_gen
                 LOG.info('Adding %d commutators; %d more to be evaluated', num_added, len(futures))
 
     if return_aux:
