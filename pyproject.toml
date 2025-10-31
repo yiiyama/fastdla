@@ -4,13 +4,13 @@ build-backend = "hatchling.build"
 
 [project]
 name = "fastdla"
-version = "0.8.3"
+version = "0.9.0"
 authors = [
   { name="Yutaro Iiyama", email="iiyama@icepp.s.u-tokyo.ac.jp" },
 ]
 description = "Fast calculation of dynamical Lie algebra"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.12"
 classifiers = [
     "Programming Language :: Python :: 3",
     "License :: OSI Approved :: MIT License",
