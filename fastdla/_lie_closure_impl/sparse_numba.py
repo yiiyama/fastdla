@@ -6,10 +6,10 @@ from typing import Optional
 import time
 from multiprocessing import cpu_count
 import numpy as np
-from numba import njit, objmode
+from numba import njit, objmode, prange
 from fastdla.sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
 from fastdla.sps_fast import (abs_square, sps_commutator_fast, _uniquify_fast, _sps_commutator_fast,
-                              _sps_dot_fast, _spsarray_append_fast)
+                              _sps_dot_fast_inline, _spsarray_append_fast)
 from fastdla._lie_closure_impl.algorithms import Algorithms
 
 LOG = logging.getLogger(__name__)
@@ -19,40 +19,102 @@ MEM_ALLOC_UNIT = SparsePauliSumArray.MEM_ALLOC_UNIT
 
 @njit
 def _orthogonalize(
-    new_indices: np.ndarray,
-    new_coeffs: np.ndarray,
+    op_indices: np.ndarray,
+    op_coeffs: np.ndarray,
     basis_indices: np.ndarray,
     basis_coeffs: np.ndarray,
     basis_ptrs: list[int],
     normalize: bool
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Compute the component of a vector with respect to an orthonormal basis."""
-    # Strategy: Calculate v - sum_j (v.b_j)b_j through uniquify()
+    """Compute the component of a vector with respect to an orthonormal basis.
+
+    Orthogonalization of `op` (vector v) with respect to the `basis` (list of vectors B) is achieved
+    by computing v - sum_j [(v . B_j) B_j]. Because this resulting vector is also actually a sparse
+    Pauli sum represented by index and coefficient arrays, we first compute all the (v . B_j) inner
+    products, allocate the index and coefficient arrays of required lengths, fill them, and call
+    uniquify() to compute the sum of vectors.
+    """
     basis_size = len(basis_ptrs) - 1
-    concat_size = new_indices.shape[0]
+    len_op = op_indices.shape[0]
+    concat_size = len_op
     nonzero_idx = []
     ips = []
     for ib in range(basis_size):
         start, end = basis_ptrs[ib:ib + 2]
-        ip = _sps_dot_fast(basis_indices[start:end], basis_coeffs[start:end],
-                           new_indices, new_coeffs)
+        ip = _sps_dot_fast_inline(basis_indices[start:end], basis_coeffs[start:end],
+                                  op_indices, op_coeffs)
         # Checking exact equality with zero because _sps_dot_fast rounds off close-to-zero ips
-        if not (ip.real == 0. and ip.imag == 0.):
+        if ip != 0.+0.j:
             nonzero_idx.append(ib)
             ips.append(ip)
-            concat_size += basis_ptrs[ib + 1] - basis_ptrs[ib]
+            concat_size += end - start
 
     concat_indices = np.empty(concat_size, dtype=basis_indices.dtype)
     concat_coeffs = np.empty(concat_size, dtype=basis_coeffs.dtype)
-    concat_indices[:new_indices.shape[0]] = new_indices
-    concat_coeffs[:new_coeffs.shape[0]] = new_coeffs
-    current_pos = new_indices.shape[0]
+    concat_indices[-len_op:] = op_indices
+    concat_coeffs[-len_op:] = op_coeffs
+    out_start = 0
     for ib, ip in zip(nonzero_idx, ips):
         start, end = basis_ptrs[ib:ib + 2]
-        next_pos = current_pos + end - start
-        concat_indices[current_pos:next_pos] = basis_indices[start:end]
-        concat_coeffs[current_pos:next_pos] = -ip * basis_coeffs[start:end]
-        current_pos = next_pos
+        out_end = out_start + end - start
+        concat_indices[out_start:out_end] = basis_indices[start:end]
+        concat_coeffs[out_start:out_end] = -ip * basis_coeffs[start:end]
+        out_start = out_end
+
+    return _uniquify_fast(concat_indices, concat_coeffs, normalize)
+
+
+@njit(parallel=True)
+def _orthogonalize_parallel(
+    op_indices: np.ndarray,
+    op_coeffs: np.ndarray,
+    basis_indices: np.ndarray,
+    basis_coeffs: np.ndarray,
+    basis_ptrs: list[int],
+    normalize: bool
+) -> tuple[np.ndarray, np.ndarray]:
+    """Parallelized version of _orthogonalize.
+
+    This version computes the inner products between op and basis vectors concurrently in a
+    parallelized loop. Apparently the threading overhead is rather large that we saw that the
+    function runs slower than the serial version at least for basis_size ~ 1000.
+    """
+    basis_size = len(basis_ptrs) - 1
+    len_op = op_indices.shape[0]
+    concat_indices_all = np.concatenate((basis_indices, op_indices))
+    concat_coeffs_all = np.concatenate((basis_coeffs, op_coeffs))
+    ips = np.empty(basis_size, dtype=basis_coeffs.dtype)
+    concat_size = 0
+    for ib in prange(basis_size):
+        start = basis_ptrs[ib]
+        end = basis_ptrs[ib + 1]
+        # For some reason njit(parallel=True) fails to parallelize this loop unless we use the
+        # inlined version of _sps_dot_fast here
+        ip = _sps_dot_fast_inline(op_indices, op_coeffs,
+                                  basis_indices[start:end], basis_coeffs[start:end])
+        concat_coeffs_all[start:end] *= -ip
+        ips[ib] = ip
+        if ip.real != 0.+0.j:
+            concat_size += end - start
+
+    concat_size += len_op
+    if concat_size < 0.1 * concat_indices_all.shape[0]:  # Optimal threshold could be higher
+        concat_indices = np.empty(concat_size, dtype=basis_indices.dtype)
+        concat_coeffs = np.empty(concat_size, dtype=basis_coeffs.dtype)
+        concat_indices[-len_op:] = op_indices
+        concat_coeffs[-len_op:] = op_coeffs
+        out_start = 0
+        for ib, ip in enumerate(ips):
+            if ip == 0.+0.j:
+                continue
+            start, end = basis_ptrs[ib:ib + 2]
+            out_end = out_start + end - start
+            concat_indices[out_start:out_end] = basis_indices[start:end]
+            concat_coeffs[out_start:out_end] = -ip * basis_coeffs[start:end]
+            out_start = out_end
+    else:
+        concat_indices = concat_indices_all
+        concat_coeffs = concat_coeffs_all
 
     return _uniquify_fast(concat_indices, concat_coeffs, normalize)
 
@@ -75,7 +137,7 @@ def _if_independent_update(
     o_coeffs /= o_norm
     # A single pass can result in a false orthogonal vector due to finite numerical precision
     # If the extracted vector is truly orthogonal, renormalizing it and further extracting the
-    # orthogonal component should result in almost-unit-norm vector.
+    # orthogonal component should return an almost-unit-norm vector.
     if not np.isclose(o_norm, 1., rtol=1.e-5):
         # Distill the orthogonal component
         o_indices, o_coeffs = _orthogonalize(o_indices, o_coeffs, basis_indices, basis_coeffs,

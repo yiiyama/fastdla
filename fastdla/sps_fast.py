@@ -191,8 +191,7 @@ def sps_commutator_fast(
     return SparsePauliSum(indices, coeffs, lhs.num_qubits, no_check=True)
 
 
-@njit(nogil=True)
-def _sps_dot_fast(
+def _sps_dot_fast_impl(
     indices1: np.ndarray,
     coeffs1: np.ndarray,
     indices2: np.ndarray,
@@ -220,6 +219,10 @@ def _sps_dot_fast(
     if complex_isclose(result, 0., atol=atol):
         return 0.+0.j
     return result
+
+
+_sps_dot_fast = njit(nogil=True)(_sps_dot_fast_impl)
+_sps_dot_fast_inline = njit(nogil=True, inline='always')(_sps_dot_fast_impl)
 
 
 def sps_dot_fast(lhs: SparsePauliSum, rhs: SparsePauliSum) -> complex:
