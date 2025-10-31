@@ -40,9 +40,15 @@ def get_algorithm_functions(
                 orthonormal_basis = aux
 
             op /= norm
-            orth = orthogonalize(normalize(orthogonalize(op, orthonormal_basis)), orthonormal_basis)
+            # # Possibly bad shortcut - in other implementations double-orthogonalization is
+            # # crucial. Can we really assume single is enough here?
+            # orth = orthogonalize(normalize(orthogonalize(op, orthonormal_basis)),
+            #                      orthonormal_basis)
+            # norm = np.sqrt(innerprod(orth, orth).real)
+            # if np.isclose(norm, 1., rtol=1.e-5):
+            orth = orthogonalize(op, orthonormal_basis)
             norm = np.sqrt(innerprod(orth, orth).real)
-            if np.isclose(norm, 1., rtol=1.e-5):
+            if not np.isclose(norm, 0., rtol=1.e-5):
                 orthonormal_basis[basis_size] = orth / norm
                 if algorithm == Algorithms.GRAM_SCHMIDT:
                     basis[basis_size] = op
