@@ -20,7 +20,7 @@ dependencies = [
     "numpy",
     "scipy",
     "numba",
-    "jax"
+    "jax[cuda12]"
 ]
 
 [project.urls]
