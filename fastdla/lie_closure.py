@@ -3,6 +3,7 @@
 from collections.abc import Sequence
 import logging
 from typing import Any, Optional
+import numpy as np
 from fastdla.sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
 from fastdla._lie_closure_impl.algorithms import Algorithms
 
@@ -99,6 +100,8 @@ def lie_closure(
 
     if isinstance(generators, SparsePauliSumArray):
         from fastdla._lie_closure_impl.sparse_numba import lie_closure as fn
+    elif isinstance(generators, np.ndarray):
+        from fastdla._lie_closure_impl.matrix_numba import lie_closure as fn
     else:
         from fastdla._lie_closure_impl.matrix_jax import lie_closure as fn
 
