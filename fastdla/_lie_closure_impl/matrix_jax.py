@@ -9,7 +9,7 @@ import numpy as np
 import jax
 from jax import Array
 import jax.numpy as jnp
-from fastdla.linalg.matrix_ops import commutator, innerprod, normalize, orthogonalize
+from fastdla.linalg.matrix_ops_jax import commutator, innerprod, normalize, orthogonalize
 from fastdla._lie_closure_impl.algorithms import Algorithms
 
 LOG = logging.getLogger(__name__)
