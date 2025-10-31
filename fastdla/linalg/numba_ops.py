@@ -15,6 +15,19 @@ def abs_square(value):
 
 
 @njit(nogil=True, inline='always')
+def _check_finite(coeff, atol_real, atol_imag, iout, normsq):
+    """Check for rounding errors in cancellations.
+
+    *WARNING* This procedure can eliminate legitimately small result in cases like a sum of two
+    large and cancelling values and a small value.
+    """
+    atol = max(atol_real, atol_imag) * 1.e-5
+    if complex_isclose(coeff, 0., atol=atol):
+        return iout, normsq
+    return iout + 1, normsq + abs_square(coeff)
+
+
+@njit(nogil=True, inline='always')
 def innerprod(op1: np.ndarray, op2: np.ndarray) -> complex:
     """Inner product between two matrices defined by Tr(A†B)/d. A can be a stack of matrices."""
     result = np.zeros(op1.shape[:-2], dtype=op1.dtype)
