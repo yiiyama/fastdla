@@ -137,6 +137,9 @@ def _update_basis(
         case Algorithms.SVD:
             update = _update_svd
 
+    def update_with_norm(_op, _basis_size, _basis, *_aux):
+        return update(normalize(_op), _basis_size, _basis, *_aux)
+
     def no_update(_, _basis_size, _basis, *_aux):
         return False, _basis, *_aux
 
@@ -144,7 +147,7 @@ def _update_basis(
     updated, basis, *aux = jax.lax.cond(
         jnp.allclose(op, 0.),
         no_update,
-        update,
+        update_with_norm,
         op, basis_size, basis, *aux
     )
     basis_size = jax.lax.select(updated, basis_size + 1, basis_size)
@@ -181,8 +184,8 @@ def get_loop_body(algorithm: Algorithms, print_every: Optional[int] = None):
                 lambda: None
             )
 
-        comm = normalize(commutator(generators[idx_gen], basis[idx_op]))
-        basis_size, basis, aux = _update_basis(comm, basis_size, basis, aux, algorithm=algorithm)
+        basis_size, basis, aux = _update_basis(commutator(generators[idx_gen], basis[idx_op]),
+                                               basis_size, basis, aux, algorithm=algorithm)
 
         # Compute the next indices
         idx_gen = (idx_gen + 1) % generators.shape[0]
@@ -221,9 +224,11 @@ def _lie_basis(
 
     # Initialize a list of normalized generators
     basis = _zeros_with_entries(ops.shape[0], first_op[None, ...])
-    size = 1
-    for op in ops[1:]:
-        size, basis, aux = _update_basis(normalize(op), size, basis, aux, algorithm=algorithm)
+    size, basis, aux = jax.lax.fori_loop(
+        1, ops.shape[0],
+        lambda iop, val: _update_basis(ops[iop], val[0], val[1], val[2], algorithm=algorithm),
+        (1, basis, aux)
+    )
     basis = basis[:size]
 
     return basis, aux
@@ -289,8 +294,8 @@ def lie_basis(
         dependent on the algorithm is returned in addition.
     """
     basis, aux = _lie_basis(ops, algorithm=algorithm)
-    basis, aux = _truncate_arrays(basis, aux, basis.shape[0], algorithm=algorithm)
     if return_aux:
+        basis, aux = _truncate_arrays(basis, aux, basis.shape[0], algorithm=algorithm)
         return basis, aux
     return basis
 
