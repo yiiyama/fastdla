@@ -8,8 +8,9 @@ from multiprocessing import cpu_count
 import numpy as np
 from numba import njit, objmode, prange
 from fastdla.sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
-from fastdla.sps_fast import (abs_square, sps_commutator_fast, _uniquify_fast, _sps_commutator_fast,
+from fastdla.sps_fast import (sps_commutator_fast, _uniquify_fast, _sps_commutator_fast,
                               _sps_dot_fast_inline, _spsarray_append_fast)
+from fastdla.linalg.numba_ops import abs_square
 from fastdla._lie_closure_impl.algorithms import Algorithms
 
 LOG = logging.getLogger(__name__)
