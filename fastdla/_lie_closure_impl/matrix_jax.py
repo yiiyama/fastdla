@@ -323,6 +323,10 @@ def lie_closure(
     """
     generators, aux = _lie_basis(generators, algorithm=algorithm)
     LOG.info('Number of independent generators: %d', generators.shape[0])
+    if generators.shape[0] <= 1:
+        if return_aux:
+            return generators, aux
+        return generators
 
     # Get the main loop function for the algorithm
     main_loop_body = get_loop_body(algorithm, print_every=print_every)
