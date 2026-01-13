@@ -10,8 +10,8 @@ def hea_generators(num_qubits: int) -> SparsePauliSumArray:
 
     .. math::
 
-        \mathcal{G}_{\mathrm{HEA}} = \left\{ X_n, Y_n \right\}_{n=0}^{N_q-1} \cup
-                                     \left\{ \sum_{n=0}^{N_q - 2} Z_n Z_{n+1} \right\}.
+        \mathcal{G}_{\mathrm{HEA}} = \left\{ i X_n, i Y_n \right\}_{n=0}^{N_q-1} \cup
+                                     \left\{ \sum_{n=0}^{N_q - 2} i Z_n Z_{n+1} \right\}.
 
     This set of generators are proven to close to a full rank DLA in the reference.
     """
@@ -19,11 +19,11 @@ def hea_generators(num_qubits: int) -> SparsePauliSumArray:
 
     for iq in range(num_qubits):
         string = 'I' * (num_qubits - iq - 1) + 'X' + 'I' * iq
-        generators.append(SparsePauliSum(string, 1.))
+        generators.append(SparsePauliSum(string, 1.j))
         string = 'I' * (num_qubits - iq - 1) + 'Y' + 'I' * iq
-        generators.append(SparsePauliSum(string, 1.))
+        generators.append(SparsePauliSum(string, 1.j))
 
     zz_strings = ['I' * (num_qubits - iq - 2) + 'ZZ' + 'I' * iq for iq in range(num_qubits - 1)]
-    generators.append(SparsePauliSum(zz_strings, np.ones(num_qubits - 1)))
+    generators.append(SparsePauliSum(zz_strings, np.full(num_qubits - 1, 1.j)))
 
     return SparsePauliSumArray(generators)

@@ -39,7 +39,7 @@ def heisenberg_1d_hva_generators(
         paulis[1].append('Y' + 'I' * (num_spins - 2) + 'Y')
         paulis[2].append('Z' + 'I' * (num_spins - 2) + 'Z')
 
-    return SparsePauliSumArray([SparsePauliSum(p, np.ones(len(p))) for p in paulis])
+    return SparsePauliSumArray([SparsePauliSum(p, np.full(len(p), 1.j)) for p in paulis])
 
 
 def xxz_hva_generators(
@@ -53,12 +53,12 @@ def xxz_hva_generators(
     .. math::
 
         \mathcal{G}_{\mathrm{XXZ}_U} & = \left\{
-                                        \sum_{n \mathrm{even}} (X_n X_{n+1} + Y_n Y_{n+1}),
-                                        \sum_{n \mathrm{odd}} (X_n X_{n+1} + Y_n Y_{n+1}),
-                                        \sum_{n \mathrm{even}} Z_n Z_{n+1},
-                                        \sum_{n \mathrm{odd}} Z_n Z_{n+1}
+                                        \sum_{n \mathrm{even}} i (X_n X_{n+1} + Y_n Y_{n+1}),
+                                        \sum_{n \mathrm{odd}} i (X_n X_{n+1} + Y_n Y_{n+1}),
+                                        \sum_{n \mathrm{even}} i Z_n Z_{n+1},
+                                        \sum_{n \mathrm{odd}} i Z_n Z_{n+1}
                                        \right\} \\
-        \mathcal{G}_{\mathrm{XXZ}} & = \mathcal{G}_{\mathrm{XXZ}_U} \cup \{Z_0 + Z_{N-1}\}.
+        \mathcal{G}_{\mathrm{XXZ}} & = \mathcal{G}_{\mathrm{XXZ}_U} \cup \{i (Z_0 + Z_{N-1})\}.
 
     The generators commute with magnetization
 
@@ -84,10 +84,10 @@ def xxz_hva_generators(
         paulis[1].append('I' * (num_spins - iq - 2) + 'YY' + 'I' * iq)
         paulis[3].append('I' * (num_spins - iq - 2) + 'ZZ' + 'I' * iq)
 
-    generators = SparsePauliSumArray([SparsePauliSum(p, np.ones(len(p))) for p in paulis])
+    generators = SparsePauliSumArray([SparsePauliSum(p, np.full(len(p), 1.j)) for p in paulis])
 
     if subspace_controllable:
         paulis = ['I' * (num_spins - 1) + 'Z', 'Z' + 'I' * (num_spins - 1)]
-        generators.append(SparsePauliSum(paulis, [1., 1.]))
+        generators.append(SparsePauliSum(paulis, [1.j, 1.j]))
 
     return generators
