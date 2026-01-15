@@ -296,7 +296,7 @@ def z2lgt_translation_projector(num_fermions: int, jphase: int) -> SparsePauliSu
 def z2lgt_symmetry_eigenspace(
     gauss_eigvals: Sequence[int],
     u1_total_charge: Optional[int] = None,
-    t_jphase: Optional[int] = None,
+    t2_momentum: Optional[int] = None,
     gauge_op: str = 'X',
     npmod=np
 ) -> np.ndarray:
@@ -307,16 +307,16 @@ def z2lgt_symmetry_eigenspace(
 
     Returns a (pu, 2**nq) matrix.
     """
-    basis = z2lgt_dense_gauss_eigenspace(gauss_eigvals, gauge_op=gauge_op, npmod=npmod)
+    basis = z2lgt_gauss_eigenspace(gauss_eigvals, gauge_op=gauge_op, npmod=npmod)
     if u1_total_charge is not None:
-        basis = z2lgt_dense_u1_eigenspace(u1_total_charge, basis, npmod=npmod)
-    if t_jphase is not None:
-        basis = z2lgt_dense_translation_eigenspace(t_jphase, basis, npmod=npmod)
+        basis = z2lgt_u1_eigenspace(u1_total_charge, basis, npmod=npmod)
+    if t2_momentum is not None:
+        basis = z2lgt_t2_eigenspace(t2_momentum, basis, npmod=npmod)
 
     return basis
 
 
-def z2lgt_dense_gauss_eigenspace(
+def z2lgt_gauss_eigenspace(
     gauss_eigvals: Sequence[int],
     gauge_op: str = 'X',
     npmod=np
@@ -424,7 +424,7 @@ def z2lgt_dense_gauss_eigenspace(
 
 
 # pylint: disable-next=invalid-name
-_z2lgt_jnp_gauss_eigenspace = jax.jit(partial(z2lgt_dense_gauss_eigenspace, npmod=jnp),
+_z2lgt_jnp_gauss_eigenspace = jax.jit(partial(z2lgt_gauss_eigenspace, npmod=jnp),
                                       static_argnums=[0], static_argnames=['gauge_op'])
 
 
@@ -433,9 +433,9 @@ def z2lgt_jnp_gauss_eigenspace(eigvals, gauge_op='X'):
     return _z2lgt_jnp_gauss_eigenspace(tuple(eigvals), gauge_op=gauge_op)
 
 
-def z2lgt_dense_u1_projection(
-    total_charge: int,
+def z2lgt_u1_projection(
     num_fermions: int,
+    charge: int,
     npmod=np
 ) -> LinearOpFunction:
     r"""Return a function that projects out the eigensubspace of the total U(1) charge for the
@@ -447,7 +447,7 @@ def z2lgt_dense_u1_projection(
     eigenvalue 1).
 
     Args:
-        total_charge: Unnormalized total charge (an eigenvalue of :math:`\sum_{n=0}^{N_s-1} Z_n`).
+        charge: Unnormalized total charge (an eigenvalue of :math:`\sum_{n=0}^{N_s-1} Z_n`).
         num_fermions: :math:`N_f`.
 
     Returns:
@@ -458,7 +458,7 @@ def z2lgt_dense_u1_projection(
     num_sites = 2 * num_fermions
     num_qubits = 2 * num_sites
 
-    if abs(total_charge) > num_sites or total_charge % 2 != 0:
+    if abs(charge) > num_sites or charge % 2 != 0:
         raise ValueError('Invalid charge value')
 
     # Calculate the total charge for all site charge configurations
@@ -468,7 +468,7 @@ def z2lgt_dense_u1_projection(
         eigvals += npmod.expand_dims(z, tuple(range(isite)) + tuple(range(isite + 1, num_sites)))
     eigvals = eigvals.reshape(-1)
     # Site charge configurations that correspond to the target total charge
-    target_charge_states = npmod.nonzero(npmod.equal(eigvals, total_charge))[0]
+    target_charge_states = npmod.nonzero(npmod.equal(eigvals, charge))[0]
 
     def op(basis):
         """Return the singular matrix."""
@@ -495,29 +495,27 @@ def z2lgt_dense_u1_projection(
     return op
 
 
-def z2lgt_dense_u1_eigenspace(
-    total_charge: int,
+def z2lgt_u1_eigenspace(
+    num_fermions: int,
+    charge: int,
     basis: Optional[np.ndarray] = None,
-    num_fermions: Optional[int] = None,
     npmod=np
 ) -> np.ndarray:
     r"""Extract the eigenspace of the U(1) symmetry for the given total charge.
 
     Args:
-        total_charge: Unnormalized total charge (an eigenvalue of :math:`\sum_{n=0}^{N_s-1} Z_n`).
-        basis: The basis matrix :math:`B`.
         num_fermions: :math:`N_f`.
+        charge: Unnormalized total charge (an eigenvalue of :math:`\sum_{n=0}^{N_s-1} Z_n`).
+        basis: The basis matrix :math:`B`.
 
     Returns:
         A matrix whose columns form the orthonormal basis of the eigen-subspace.
     """
-    if num_fermions is None:
-        num_fermions = np.round(np.log2(basis.shape[0])).astype(int) // 4
-    op = z2lgt_dense_u1_projection(total_charge, num_fermions, npmod=npmod)
+    op = z2lgt_u1_projection(num_fermions, charge, npmod=npmod)
     return get_eigenspace(op, basis, dim=2 ** (num_fermions * 4), npmod=npmod)
 
 
-def z2lgt_dense_translation(
+def z2lgt_t2_translation(
     num_fermions: int,
     npmod=np
 ) -> tuple[LinearOpFunction, complex]:
@@ -534,23 +532,21 @@ def z2lgt_dense_translation(
     return translation(num_qubits, shift=4, npmod=npmod)
 
 
-def z2lgt_dense_translation_eigenspace(
-    jphase: int,
+def z2lgt_t2_eigenspace(
+    num_fermions: int,
+    momentum: int,
     basis: Optional[np.ndarray] = None,
-    num_fermions: Optional[int] = None,
     npmod=np
 ) -> np.ndarray:
     r"""Extract the :math:`j`th eigenspace of the translation :math:`T_2`.
 
     Args:
-        jphase: Integer :math:`j` of the :math:`T_2` eigenvalue :math:`e^{2\pi i j/N_f}`.
-        basis: The basis matrix :math:`B`.
         num_fermions: :math:`N_f`.
+        momentum: Integer :math:`j` of the :math:`T_2` eigenvalue :math:`e^{2\pi i j/N_f}`.
+        basis: The basis matrix :math:`B`.
 
     Returns:
         A matrix whose columns form the orthonormal basis of the eigen-subspace.
     """
-    if num_fermions is None:
-        num_fermions = np.round(np.log2(basis.shape[0])).astype(int) // 4
-    return translation_eigenspace(jphase, basis=basis, num_spins=num_fermions * 4, shift=4,
+    return translation_eigenspace(momentum, basis=basis, num_spins=num_fermions * 4, shift=4,
                                   npmod=npmod)
