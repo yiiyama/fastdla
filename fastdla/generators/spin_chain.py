@@ -56,7 +56,8 @@ def parity_reflection(
     """Return a function that applies a parity reflection to states.
 
     Parity reflection is uniquely defined under open boundary conditions, but there is a freedom
-    to choose the reflection point for periodic boundary conditions.
+    to choose the reflection point for periodic boundary conditions. Spins are indexed from right to
+    left.
 
     Args:
         num_spins: Number of spins.
@@ -71,13 +72,13 @@ def parity_reflection(
             reflect_about = num_spins // 2
 
     if isinstance(reflect_about, int):
-        # Reverse the order and shift by r - (N-1-r) (+1 if odd)
-        shift = 2 * reflect_about - num_spins + 1 + (num_spins % 2)
+        # Reverse the order and shift by N-1-2r
+        shift = num_spins - 1 - 2 * reflect_about
         dest = np.roll(np.arange(num_spins)[::-1], shift)
     else:
         if num_spins % 2 == 1:
             raise ValueError('Parity reflection about a link undefined for odd number of spins')
-        dest = np.roll(np.arange(num_spins)[::-1], 2 * max(reflect_about) - num_spins)
+        dest = np.roll(np.arange(num_spins)[::-1], num_spins - 2 * max(reflect_about))
 
     def op(basis):
         basis = basis.reshape((2,) * num_spins + (-1,))
