@@ -50,15 +50,38 @@ def magnetization_eigenspace(
 
 def parity_reflection(
     num_spins: int,
+    reflect_about: Optional[int | tuple[int, int]] = None,
     npmod=np
 ) -> tuple[LinearOpFunction, int]:
-    """Return a function that applies a parity reflection to states."""
-    if num_spins % 2:
-        raise ValueError('Parity undefined for odd number of spins')
+    """Return a function that applies a parity reflection to states.
+
+    Parity reflection is uniquely defined under open boundary conditions, but there is a freedom
+    to choose the reflection point for periodic boundary conditions.
+
+    Args:
+        num_spins: Number of spins.
+        reflect_about: If an integer n, perform the parity reflection that fixes the nth spin. If
+            a tuple of contiguous integers, perform the reflection about the link between the two
+            spins.
+    """
+    if reflect_about is None:
+        if num_spins % 2 == 0:
+            reflect_about = (num_spins // 2 - 1, num_spins // 2)
+        else:
+            reflect_about = num_spins // 2
+
+    if isinstance(reflect_about, int):
+        # Reverse the order and shift by r - (N-1-r) (+1 if odd)
+        shift = 2 * reflect_about - num_spins + 1 + (num_spins % 2)
+        dest = np.roll(np.arange(num_spins)[::-1], shift)
+    else:
+        if num_spins % 2 == 1:
+            raise ValueError('Parity reflection about a link undefined for odd number of spins')
+        dest = np.roll(np.arange(num_spins)[::-1], 2 * max(reflect_about) - num_spins)
 
     def op(basis):
         basis = basis.reshape((2,) * num_spins + (-1,))
-        basis = basis.transpose(tuple(range(num_spins - 1, -1, -1)) + (num_spins,))
+        basis = npmod.moveaxis(basis, np.arange(num_spins), dest)
         basis = basis.reshape((2 ** num_spins, -1))
         return basis
 
@@ -69,20 +92,21 @@ def parity_reflection(
 
 
 def parity_eigenspace(
-    parity: int,
+    sign: int,
     basis: Optional[np.ndarray] = None,
     num_spins: Optional[int] = None,
+    reflect_about: Optional[int | tuple[int, int]] = None,
     npmod=np
 ) -> np.ndarray:
     """Extract the parity eigenspace."""
-    if abs(parity) != 1:
+    if abs(sign) != 1:
         raise ValueError('Invalid parity eigenvalue')
 
     if num_spins is None:
         num_spins = np.round(np.log2(basis.shape[0])).astype(int)
 
-    op = parity_reflection(num_spins, npmod=npmod)
-    return get_eigenspace((op, parity), basis, dim=2 ** num_spins, npmod=npmod)
+    op = parity_reflection(num_spins, reflect_about=reflect_about, npmod=npmod)
+    return get_eigenspace((op, sign), basis, dim=2 ** num_spins, npmod=npmod)
 
 
 def translation(
@@ -104,12 +128,12 @@ def translation(
 
     def op(basis):
         """Translate the states in the basis."""
-        translated = basis.reshape((2,) * num_spins + (-1,))
+        basis = basis.reshape((2,) * num_spins + (-1,))
         src = np.arange(num_spins)
         dest = np.roll(np.arange(num_spins), -shift)
-        translated = npmod.moveaxis(translated, src, dest)
-        translated = translated.reshape((2 ** num_spins, -1))
-        return translated
+        basis = npmod.moveaxis(basis, src, dest)
+        basis = basis.reshape((2 ** num_spins, -1))
+        return basis
 
     if npmod is jnp:
         op = jax.jit(op)
