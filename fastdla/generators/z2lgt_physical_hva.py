@@ -62,7 +62,7 @@ def z2lgt_physical_hva_generators(
 
     .. math::
 
-        Q = \frac{1}{N_s} \sum_{n=0}^{N_s-1} g_n Z_{n-1,n} Z_{n,n+1}.
+        Q = \sum_{n=0}^{N_s-1} g_n Z_{n-1,n} Z_{n,n+1}.
 
     :math:`T_2` is defined as an operation that shifts site index by 2: :math:`n \to n+2`, and can
     be implemented with a series of qubit swap operations.
@@ -79,10 +79,15 @@ def z2lgt_physical_hva_generators(
     generators = SparsePauliSumArray(num_qubits=num_links)
     flip_op = 'X' if gauge_op == 'Z' else 'Z'
 
-    # Field term H_g
+    # Field term H_g(even)
     paulis = ['I' * (num_links - ilink - 1) + gauge_op + 'I' * ilink
-              for ilink in range(num_links)]
-    generators.append(SparsePauliSum(paulis, 1.j * np.ones(num_links)))
+              for ilink in range(0, num_links, 2)]
+    generators.append(SparsePauliSum(paulis, 1.j * np.ones(num_links // 2)))
+
+    # Field term H_g(odd)
+    paulis = ['I' * (num_links - ilink - 1) + gauge_op + 'I' * ilink
+              for ilink in range(1, num_links, 2)]
+    generators.append(SparsePauliSum(paulis, 1.j * np.ones(num_links // 2)))
 
     # Mass term H_m(even)
     paulis = [gauge_op + 'I' * (num_links - 2) + gauge_op]
@@ -119,13 +124,44 @@ def z2lgt_physical_hva_generators(
     return generators
 
 
-def z2lgt_physical_dense_u1_eigenspace(
+def z2lgt_physical_symmetry_eigenspace(
     gauss_eigvals: Sequence[int],
-    total_charge: int,
+    u1_charge: Optional[int] = None,
+    c_phase: Optional[int] = None,
+    p_sign: Optional[int] = None,
+    t2_momentum: Optional[int] = None,
+    cp_sign: Optional[int] = None,
+    basis: Optional[np.ndarray] = None,
+    npmod=np
+) -> np.ndarray:
+    if u1_charge is not None:
+        basis = z2lgt_physical_u1_eigenspace(gauss_eigvals, u1_charge, basis=basis, npmod=npmod)
+    elif basis is None:
+        basis = npmod.eye(2 ** len(gauss_eigvals), dtype=np.complex128)
+    if c_phase is not None:
+        basis = z2lgt_physical_c_eigenspace(gauss_eigvals, c_phase, basis=basis, npmod=npmod)
+    if p_sign is not None:
+        basis = z2lgt_physical_p_eigenspace(gauss_eigvals, p_sign, basis=basis, npmod=npmod)
+    if t2_momentum is not None:
+        basis = z2lgt_physical_t2_eigenspace(gauss_eigvals, t2_momentum, basis=basis, npmod=npmod)
+    if cp_sign is not None:
+        basis = z2lgt_physical_cp_eigenspace(gauss_eigvals, cp_sign, basis=basis, npmod=npmod)
+    return basis
+
+
+def z2lgt_physical_u1_eigenspace(
+    gauss_eigvals: Sequence[int],
+    charge: int,
     basis: Optional[np.ndarray] = None,
     npmod=np
 ) -> np.ndarray:
     r"""Extract the eigenspace of the U(1) symmetry for the given total charge.
+
+    Total charge is defined as
+
+    .. math::
+
+        Q = \sum_{n=0}^{N_s-1} g_n Z_{n-1,n} Z_{n,n+1}.
 
     Args:
         gauss_eigvals: Charge sector specification (eigenvalues {+1, -1} of :math:`g_n` for each
@@ -142,22 +178,21 @@ def z2lgt_physical_dense_u1_eigenspace(
 
     idx = npmod.arange(2 ** num_links)
     bidx = ((idx[:, None] >> npmod.arange(num_links)[None, ::-1]) % 2).astype(np.uint8)
-    charges = npmod.zeros(2 ** num_links, dtype=int)
-    for ilink, gn in enumerate(gauss_eigvals):
-        parity = bidx[:, num_links - 1 - ilink] ^ bidx[:, (-ilink) % num_links]
-        charges += (1 - 2 * parity) * gn
+    # Z_{n-1,n} Z_{n,n+1}
+    zz_parity = np.roll(bidx, -1, axis=1) ^ bidx
+    charges = np.sum((1 - 2 * zz_parity) * gauss_eigvals[None, ::-1], axis=1)
 
     if basis is None:
         # Directly extract one-hot vectors
-        target_charge_states = npmod.nonzero(npmod.equal(charges, total_charge))[0]
+        eigen_idx = npmod.nonzero(npmod.equal(charges, charge))[0]
         if npmod is np:
-            subspace = np.zeros((2 ** num_links, idx.shape[0]), dtype=np.complex128)
-            subspace[target_charge_states, np.arange(target_charge_states.shape[0])] = 1.
+            subspace = np.zeros((2 ** num_links, eigen_idx.shape[0]), dtype=np.complex128)
+            subspace[eigen_idx, np.arange(eigen_idx.shape[0])] = 1.
         else:
-            subspace = jax.nn.one_hot(target_charge_states, 2 ** num_links).T
+            subspace = jax.nn.one_hot(eigen_idx, 2 ** num_links).T
     else:
         def op(_basis):
-            return _basis * npmod.not_equal(charges, total_charge).astype(int)[:, None]
+            return _basis * npmod.not_equal(charges, charge).astype(int)[:, None]
 
         if npmod is jnp:
             op = jax.jit(op)
@@ -167,9 +202,9 @@ def z2lgt_physical_dense_u1_eigenspace(
     return subspace
 
 
-def z2lgt_physical_dense_c_eigenspace(
+def z2lgt_physical_c_eigenspace(
     gauss_eigvals: Sequence[int],
-    c_phase: int,
+    phase: int,
     basis: Optional[np.ndarray] = None,
     npmod=np
 ) -> np.ndarray:
@@ -184,43 +219,48 @@ def z2lgt_physical_dense_c_eigenspace(
     Returns:
         A matrix whose columns form the orthonormal basis of the eigen-subspace.
     """
-    return translation_eigenspace(c_phase, basis=basis, num_spins=len(gauss_eigvals),
+    return translation_eigenspace(phase, basis=basis, num_spins=len(gauss_eigvals),
                                   npmod=npmod)
 
 
-def z2lgt_physical_dense_p_eigenspace(
+def z2lgt_physical_p_eigenspace(
     gauss_eigvals: Sequence[int],
-    parity: int,
+    sign: int,
     basis: Optional[np.ndarray] = None,
     npmod=np
 ) -> np.ndarray:
-    return parity_eigenspace(parity, basis=basis, num_spins=len(gauss_eigvals), npmod=npmod)
+    return parity_eigenspace(sign, basis=basis, num_spins=len(gauss_eigvals), reflect_about=0,
+                             npmod=npmod)
 
 
-def z2lgt_physical_dense_t2_eigenspace(
+def z2lgt_physical_t2_eigenspace(
     gauss_eigvals: Sequence[int],
-    t2_momentum: int,
+    momentum: int,
     basis: Optional[np.ndarray] = None,
     npmod=np
 ) -> np.ndarray:
-    return translation_eigenspace(t2_momentum, basis=basis, num_spins=len(gauss_eigvals), shift=2,
+    return translation_eigenspace(momentum, basis=basis, num_spins=len(gauss_eigvals), shift=2,
                                   npmod=npmod)
 
 
-def z2lgt_physical_dense_cp_eigenspace(
+def z2lgt_physical_cp_eigenspace(
     gauss_eigvals: Sequence[int],
-    cp_parity: int,
+    sign: int,
     basis: Optional[np.ndarray] = None,
     npmod=np
 ) -> np.ndarray:
     num_links = len(gauss_eigvals)
 
     def cp_kernel(basis):
-        idx = npmod.arange(2 ** num_links)
-        bidx = (idx[:, None] >> npmod.arange(num_links)[None, ::-1]) % 2
-        dest_bidx = npmod.roll(bidx[:, ::-1], 1, axis=1)
-        dest_idx = npmod.sum(dest_bidx * (1 << npmod.arange(num_links)[::-1]), axis=1)
-        return basis[dest_idx, :] - cp_parity * basis
+        transformed = basis.reshape((2,) * num_links + (-1,))
+        # P
+        transformed = npmod.moveaxis(transformed, np.arange(num_links), np.arange(num_links)[::-1])
+        # C
+        src = np.arange(num_links)
+        dest = np.roll(np.arange(num_links), -1)
+        transformed = npmod.moveaxis(transformed, src, dest)
+        # transformed is the OB in the get_eigenspace doc
+        return transformed.reshape((2 ** num_links, -1)) - sign * basis
 
     if npmod is jnp:
         cp_kernel = jax.jit(cp_kernel)
