@@ -86,7 +86,7 @@ def _orthogonalize_parallel(
     concat_coeffs_all = np.concatenate((basis_coeffs, op_coeffs))
     ips = np.empty(basis_size, dtype=basis_coeffs.dtype)
     concat_size = 0
-    for ib in prange(basis_size):
+    for ib in prange(basis_size):  # pylint: disable=not-an-iterable
         start = basis_ptrs[ib]
         end = basis_ptrs[ib + 1]
         # For some reason njit(parallel=True) fails to parallelize this loop unless we use the
@@ -334,7 +334,7 @@ def lie_closure(
             comm = sps_commutator_fast(generators[iop1], generators[iop2], True)
             if_independent_update(comm, basis, aux, LOG.getEffectiveLevel())
 
-    max_dim = max_dim or 4 ** generators.num_qubits - 1
+    max_dim = max_dim or 4 ** generators.num_qubits
 
     if len(basis) >= max_dim:
         basis, aux = _truncate_arrays(basis, aux, max_dim)

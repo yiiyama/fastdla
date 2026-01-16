@@ -330,7 +330,7 @@ def lie_closure(
 
     # Get the main loop function for the algorithm
     main_loop_body = get_loop_body(algorithm, print_every=print_every)
-    max_dim = max_dim or generators.shape[-1] ** 2 - 1
+    max_dim = max_dim or generators.shape[-1] ** 2
 
     # Initialize the basis
     basis_size = generators.shape[0]

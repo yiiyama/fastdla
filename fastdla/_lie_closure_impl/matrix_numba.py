@@ -191,7 +191,7 @@ def lie_closure(
         A basis of the Lie algebra spanned by the nested commutators of the generators. If
         return_aux=True, a list of auxiliary objects is returned in addition.
     """
-    max_dim = max_dim or generators.shape[-1] ** 2 - 1
+    max_dim = max_dim or generators.shape[-1] ** 2
     log_level = LOG.getEffectiveLevel()
     if print_every == 0:
         if log_level <= logging.DEBUG:
