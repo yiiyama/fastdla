@@ -53,8 +53,13 @@ def z2lgt_hva_generators(num_fermions: int, gauge_op: str = 'X') -> SparsePauliS
 
     .. math::
 
-        \{ iH_{\mathrm{g}}}, iH_{\mathrm{m}}^{\mathrm{(even)}}}, iH_{\mathrm{m}}^{\mathrm{(odd)}}},
-           iH_{\mathrm{h}}^{\mathrm{(even)}}}, iH_{\mathrm{h}}^{\mathrm{(odd)}}} \}
+        \{ -iH_{\mathrm{g}}^{\mathrm{(even)}},
+           -iH_{\mathrm{g}}^{\mathrm{(odd)}},
+           -iH_{\mathrm{m}}^{\mathrm{(even)}},
+           -iH_{\mathrm{m}}^{\mathrm{(odd)}}},
+           -iH_{\mathrm{h}}^{\mathrm{(even)}},
+           -iH_{\mathrm{h}}^{\mathrm{(odd)}}
+        \}
 
     all commute with symmetry operators :math:`\{G_n\}_{n=0}^{N_s-1}` (Gauss's law), :math:`Q`
     (total charge), and :math:`T_2` (translation). The definitions of :math:`G_n` and :math:`Q` are
@@ -81,14 +86,14 @@ def z2lgt_hva_generators(num_fermions: int, gauge_op: str = 'X') -> SparsePauliS
     # Field term H_g
     strings = ['I' * (num_qubits - iq - 1) + gauge_op + 'I' * iq
                for iq in range(1, num_qubits, 2)]
-    coeffs = 1.j * np.ones(len(strings))
+    coeffs = -1.j * np.ones(len(strings))
     generators.append(SparsePauliSum(strings, coeffs))
 
     # Mass terms H_m (even and odd)
     for parity in [0, 1]:
         strings = ['I' * (num_qubits - isite * 2 - 1) + 'Z' + 'I' * (isite * 2)
                    for isite in range(parity, 2 * num_fermions, 2)]
-        coeffs = 1.j * np.full(len(strings), 1 - 2 * parity)
+        coeffs = -1.j * np.full(len(strings), 1 - 2 * parity)
         generators.append(SparsePauliSum(strings, coeffs))
 
     # Hopping terms H_h (even and odd)
@@ -102,7 +107,7 @@ def z2lgt_hva_generators(num_fermions: int, gauge_op: str = 'X') -> SparsePauliS
                 paulis_reverse[isite * 2 + 1] = link_op
                 paulis_reverse[(isite * 2 + 2) % num_qubits] = site_op
                 strings.append(''.join(paulis_reverse[::-1]))
-        coeffs = 1.j * np.full(len(strings), 0.5)
+        coeffs = -1.j * np.full(len(strings), 0.5)
         generators.append(SparsePauliSum(strings, coeffs))
 
     return generators

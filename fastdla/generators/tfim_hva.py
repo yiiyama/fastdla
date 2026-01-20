@@ -14,8 +14,8 @@ def tfim_1d_hva_generators(
     .. math::
 
         \mathcal{G}_{\mathrm{TFIM}} = \left\{
-                                        \sum_{n=0}^{N_f} i Z_n Z_{n+1},
-                                        \sum_{n=0}^{N-1} i X_n
+                                        \sum_{n=0}^{N_f} -i Z_n Z_{n+1},
+                                        \sum_{n=0}^{N-1} -i X_n
                                       \right\}
 
     with :math:`N_f=N-2 (N-1)` for the open (periodic) boundary conditions (identifying
@@ -37,4 +37,4 @@ def tfim_1d_hva_generators(
     if boundary_condition == 'periodic':
         paulis[0].append('Z' + 'I' * (num_spins - iq - 2) + 'Z')
 
-    return SparsePauliSumArray([SparsePauliSum(p, np.full(len(p), 1.j)) for p in paulis])
+    return SparsePauliSumArray([SparsePauliSum(p, np.full(len(p), -1.j)) for p in paulis])

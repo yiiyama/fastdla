@@ -54,8 +54,13 @@ def z2lgt_physical_hva_generators(
 
     .. math::
 
-        \{ iH_{\mathrm{g}}}, iH_{\mathrm{m}}^{\mathrm{(even)}}}, iH_{\mathrm{m}}^{\mathrm{(odd)}}},
-           iH_{\mathrm{h}}^{\mathrm{(even)}}}, iH_{\mathrm{h}}^{\mathrm{(odd)}}} \}
+        \{ -iH_{\mathrm{g}}^{\mathrm{(even)}},
+           -iH_{\mathrm{g}}^{\mathrm{(odd)}},
+           -iH_{\mathrm{m}}^{\mathrm{(even)}},
+           -iH_{\mathrm{m}}^{\mathrm{(odd)}}},
+           -iH_{\mathrm{h}}^{\mathrm{(even)}},
+           -iH_{\mathrm{h}}^{\mathrm{(odd)}}
+        \}
 
     all commute with symmetry operators :math:`Q` (total charge) and :math:`T_2` (translation).
     :math:`Q` is defined as
@@ -82,23 +87,23 @@ def z2lgt_physical_hva_generators(
     # Field term H_g(even)
     paulis = ['I' * (num_links - ilink - 1) + gauge_op + 'I' * ilink
               for ilink in range(0, num_links, 2)]
-    generators.append(SparsePauliSum(paulis, 1.j * np.ones(num_links // 2)))
+    generators.append(SparsePauliSum(paulis, -1.j * np.ones(num_links // 2)))
 
     # Field term H_g(odd)
     paulis = ['I' * (num_links - ilink - 1) + gauge_op + 'I' * ilink
               for ilink in range(1, num_links, 2)]
-    generators.append(SparsePauliSum(paulis, 1.j * np.ones(num_links // 2)))
+    generators.append(SparsePauliSum(paulis, -1.j * np.ones(num_links // 2)))
 
     # Mass term H_m(even)
     paulis = [gauge_op + 'I' * (num_links - 2) + gauge_op]
     paulis += ['I' * (num_links - ilink - 2) + gauge_op * 2 + 'I' * ilink
                for ilink in range(1, num_links - 1, 2)]
-    generators.append(SparsePauliSum(paulis, 1.j * gauss_eigvals[::2]))
+    generators.append(SparsePauliSum(paulis, -1.j * gauss_eigvals[::2]))
 
     # Mass term H_m(odd)
     paulis = ['I' * (num_links - ilink - 2) + gauge_op * 2 + 'I' * ilink
               for ilink in range(0, num_links, 2)]
-    generators.append(SparsePauliSum(paulis, -1.j * gauss_eigvals[1::2]))
+    generators.append(SparsePauliSum(paulis, 1.j * gauss_eigvals[1::2]))
 
     # Hopping terms H_h(even)
     paulis = ['I' * (num_links - ilink - 1) + flip_op + 'I' * ilink
@@ -108,7 +113,7 @@ def z2lgt_physical_hva_generators(
                for ilink in range(2, num_links, 2)]
     zxz_coeff = -0.5 * gauss_eigvals[::2] * gauss_eigvals[1::2]
     coeffs = np.concatenate([np.full(num_links // 2, 0.5), zxz_coeff])
-    generators.append(SparsePauliSum(paulis, 1.j * coeffs))
+    generators.append(SparsePauliSum(paulis, -1.j * coeffs))
 
     # Hopping terms H_h(odd)
     paulis = ['I' * (num_links - ilink - 1) + flip_op + 'I' * ilink
@@ -119,7 +124,7 @@ def z2lgt_physical_hva_generators(
     gauss_eigvals = np.asarray(gauss_eigvals)
     zxz_coeff = -0.5 * gauss_eigvals[1::2] * np.roll(gauss_eigvals[::2], -1)
     coeffs = np.concatenate([np.full(num_links // 2, 0.5), zxz_coeff])
-    generators.append(SparsePauliSum(paulis, 1.j * coeffs))
+    generators.append(SparsePauliSum(paulis, -1.j * coeffs))
 
     return generators
 
