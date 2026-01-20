@@ -32,16 +32,16 @@ def _zeros_with_entries(size: int, init: Array) -> Array:
 @jax.jit
 def _update_gs_direct(
     op: Array,
-    size: int,
+    pos: int,
     basis: Array
 ) -> tuple[bool, Array]:
     """Update the basis if op has an orthogonal component."""
     has_orthcomp, orth = _has_orthcomp(op, basis)
     basis = jax.lax.cond(
         has_orthcomp,
-        lambda _orth, _basis, _size: _basis.at[_size].set(_orth),
+        lambda _orth, _basis, _pos: _basis.at[_pos].set(_orth),
         lambda a, _basis, b: _basis,
-        orth, basis, size
+        orth, basis, pos
     )
     return has_orthcomp, basis
 
@@ -49,17 +49,17 @@ def _update_gs_direct(
 @jax.jit
 def _update_gram_schmidt(
     op: Array,
-    size: int,
+    pos: int,
     basis: Array,
     orthonormal_basis: Array
 ) -> tuple[bool, Array, Array]:
     """Update the basis and the nested commutators list if op has an orthogonal component."""
-    has_orthcomp, orthonormal_basis = _update_gs_direct(op, size, orthonormal_basis)
+    has_orthcomp, orthonormal_basis = _update_gs_direct(op, pos, orthonormal_basis)
     basis = jax.lax.cond(
         has_orthcomp,
-        lambda _op, _basis, _size: _basis.at[_size].set(_op),
+        lambda _op, _basis, _pos: _basis.at[_pos].set(_op),
         lambda a, _basis, b: _basis,
-        op, basis, size
+        op, basis, pos
     )
     return has_orthcomp, basis, orthonormal_basis
 
