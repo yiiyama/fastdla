@@ -129,6 +129,59 @@ def z2lgt_physical_hva_generators(
     return generators
 
 
+def z2lgt_physical_u1_charges(
+    gauss_eigvals: Sequence[int],
+    npmod=np
+) -> np.ndarray:
+    gauss_eigvals = npmod.asarray(gauss_eigvals)
+    num_links = len(gauss_eigvals)
+
+    idx = npmod.arange(2 ** num_links)
+    bidx = ((idx[:, None] >> npmod.arange(num_links)[None, ::-1]) % 2).astype(np.uint8)
+    # Z_{n-1,n} Z_{n,n+1}
+    zz_parity = npmod.roll(bidx, -1, axis=1) ^ bidx
+    return npmod.sum((1 - 2 * zz_parity) * gauss_eigvals[None, ::-1], axis=1)
+
+
+def z2lgt_physical_u1_projector(
+    gauss_eigvals: Sequence[int],
+    charge: int
+) -> SparsePauliSum:
+    r"""Construct the projector for the U(1) symmetry for the given total charge.
+
+    Total charge is defined as
+
+    .. math::
+
+        Q = \sum_{n=0}^{N_s-1} g_n Z_{n-1,n} Z_{n,n+1}.
+
+        gauss_eigvals: Charge sector specification (eigenvalues {+1, -1} of :math:`g_n` for each
+            site).
+        total_charge: Unnormalized total charge (an eigenvalue of :math:`\sum_{n=0}^{N_s-1} Z_n`).
+    """
+    num_links = len(gauss_eigvals)
+    charges = z2lgt_physical_u1_charges(gauss_eigvals)
+    states = np.nonzero(np.equal(charges, charge))[0]
+    # Binary representations of the indices
+    states_binary = (states[:, None] >> np.arange(num_links)[None, ::-1]) % 2
+    # |0><0|=1/2(I+Z), |1><1|=1/2(I-Z) -> Coefficients of I and Z for each binary digit
+    # Example: [0, 1] -> [[1, 1], [1, -1]]
+    states_iz = np.array([[1, 1], [1, -1]])[states_binary]
+    # Take the kronecker products of the I/Z coefficients using einsum, then sum over the states to
+    # arrive at the final sparse Pauli representation of the projector
+    args = ()
+    for isite in range(num_links):
+        args += (states_iz[:, isite], [0, isite + 1])
+    args += (list(range(num_links + 1)),)
+    coeffs = np.sum(np.einsum(*args).reshape(states.shape[0], 2 ** num_links), axis=0)
+    # Take only the nonzero Paulis
+    pauli_indices = np.nonzero(coeffs)[0]
+    coeffs = coeffs[pauli_indices] / (2 ** num_links)
+    pauli_indices_bin = (pauli_indices[:, None] >> np.arange(num_links)[None, ::-1]) % 2
+    paulis = [''.join('IZ'[b] for b in idx) for idx in pauli_indices_bin]
+    return SparsePauliSum(paulis, coeffs)
+
+
 def z2lgt_physical_symmetry_eigenspace(
     gauss_eigvals: Sequence[int],
     u1_charge: Optional[int] = None,
@@ -178,14 +231,8 @@ def z2lgt_physical_u1_eigenspace(
     Returns:
         A matrix whose columns form the orthonormal basis of the eigen-subspace.
     """
-    gauss_eigvals = np.asarray(gauss_eigvals)
     num_links = len(gauss_eigvals)
-
-    idx = npmod.arange(2 ** num_links)
-    bidx = ((idx[:, None] >> npmod.arange(num_links)[None, ::-1]) % 2).astype(np.uint8)
-    # Z_{n-1,n} Z_{n,n+1}
-    zz_parity = np.roll(bidx, -1, axis=1) ^ bidx
-    charges = np.sum((1 - 2 * zz_parity) * gauss_eigvals[None, ::-1], axis=1)
+    charges = z2lgt_physical_u1_charges(gauss_eigvals, npmod=npmod)
 
     if basis is None:
         # Directly extract one-hot vectors

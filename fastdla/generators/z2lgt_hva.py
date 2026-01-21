@@ -198,7 +198,7 @@ def z2lgt_gauss_projector(eigvals: Sequence[int], gauge_op: str = 'X') -> Sparse
 def z2lgt_u1_projector(num_fermions: int, charge: int) -> SparsePauliSum:
     r"""Construct the charge conservation law projector for the Z2 LGT model.
 
-    Physical states of the Z2 LGT model must be eigenstates of
+    The U1 charge of the L2 LGT is
 
     .. math::
 
