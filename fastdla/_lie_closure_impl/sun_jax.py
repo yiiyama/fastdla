@@ -9,8 +9,8 @@ import numpy as np
 import jax
 from jax import Array
 import jax.numpy as jnp
-from fastdla.linalg.matrix_ops_jax import (commutatorh, innerprodh, normalizeh, orthogonalizeh,
-                                           compose_hermitian, upper_indices)
+from fastdla.linalg.hermitian_ops_jax import (innerprod, normalize, orthogonalize, to_matrix,
+                                              from_matrix, upper_indices)
 from fastdla._lie_closure_impl.algorithms import Algorithms
 
 LOG = logging.getLogger(__name__)
@@ -24,10 +24,10 @@ def _has_orthcomp(
     basis_diag: Array,
     basis_upper: Array
 ) -> tuple[bool, Array, Array]:
-    orth_diag, orth_upper = orthogonalizeh(diag, upper, basis_diag, basis_upper)
-    orth_diag, orth_upper = normalizeh(orth_diag, orth_upper)
-    orth_diag, orth_upper = orthogonalizeh(orth_diag, orth_upper, basis_diag, basis_upper)
-    norm = jnp.sqrt(innerprodh(orth_diag, orth_upper, orth_diag, orth_upper))
+    orth_diag, orth_upper = orthogonalize(diag, upper, basis_diag, basis_upper)
+    orth_diag, orth_upper = normalize(orth_diag, orth_upper)
+    orth_diag, orth_upper = orthogonalize(orth_diag, orth_upper, basis_diag, basis_upper)
+    norm = jnp.sqrt(innerprod(orth_diag, orth_upper, orth_diag, orth_upper))
     return jnp.isclose(norm, 1., rtol=1.e-5), orth_diag / norm, orth_upper / norm
 
 
@@ -70,7 +70,7 @@ def _update_basis(
     basis_upper: Array
 ) -> tuple[int, Array, Array]:
     def update_with_norm(_diag, _upper, _basis_size, _basis_diag, _basis_upper):
-        _diag, _upper = normalizeh(_diag, _upper)
+        _diag, _upper = normalize(_diag, _upper)
         up, bd, bu = _update_gs_direct(_diag, _upper, _basis_size, _basis_diag, _basis_upper)
         return jax.lax.select(up, _basis_size + 1, _basis_size), bd, bu
 
@@ -83,7 +83,7 @@ def _update_basis(
     )
 
 
-def get_loop_body(print_every: Optional[int] = None):
+def get_loop_body(matrix_dim: int, print_every: Optional[int] = None):
     """Make the compiled loop body function using the given algorithm."""
     log_level = LOG.getEffectiveLevel()
     if print_every is None:
@@ -100,6 +100,8 @@ def get_loop_body(print_every: Optional[int] = None):
                 'Basis size %d; %dth/%d commutator [g[%d], b[%d]]',
                 basis_size, icomm, basis_size * generators.shape[0], idx_gen, idx_op)
 
+    rows, cols = upper_indices(matrix_dim)
+
     @jax.jit
     def loop_body(val: tuple) -> tuple:
         """Compute the commutator and update the basis with orthogonal components."""
@@ -113,7 +115,11 @@ def get_loop_body(print_every: Optional[int] = None):
                 lambda: None
             )
 
-        diag, upper = commutatorh(generators[idx_gen], basis_diag[idx_op], basis_upper[idx_op])
+        op = to_matrix(basis_diag[idx_op], basis_upper[idx_op], skew=True)
+        prod = generators[idx_gen] @ op
+        diag = -2. * jnp.diagonal(prod).imag
+        upper = prod[rows, cols] - prod.T[rows, cols].conjugate()
+
         basis_size, basis_diag, basis_upper = _update_basis(diag, upper, basis_size, basis_diag,
                                                             basis_upper)
 
@@ -135,11 +141,8 @@ def _lie_basis(
     if nops == 0:
         raise ValueError('Cannot determine the basis of null space')
 
-    diag = jnp.diagonal(ops, axis1=1, axis2=2).real
-    # pylint: disable-next=unbalanced-tuple-unpacking
-    midxs, rows, cols = upper_indices(ops.shape[-1], nops)
-    upper = ops[midxs, rows, cols]
-    first_diag, first_upper = normalizeh(diag[0], upper[0])
+    diag, upper = from_matrix(ops, skew=True)
+    first_diag, first_upper = normalize(diag[0], upper[0])
 
     # Initialize a list of normalized generators
     basis_diag, basis_upper = _zeros_with_entries(nops, first_diag[None, :], first_upper[None, :])
@@ -188,7 +191,7 @@ def lie_basis(
         raise NotImplementedError('Only GS_DIRECT algorithm is available')
 
     diag, upper = _lie_basis(ops)
-    return np.array(compose_hermitian(diag, upper))
+    return np.array(to_matrix(diag, upper, skew=True))
 
 
 def lie_closure(
@@ -213,14 +216,14 @@ def lie_closure(
         raise NotImplementedError('Only GS_DIRECT algorithm is available')
 
     gen_diag, gen_upper = _lie_basis(generators)
-    generators = compose_hermitian(gen_diag, gen_upper)
+    generators = to_matrix(gen_diag, gen_upper, skew=True)
     LOG.info('Number of independent generators: %d', generators.shape[0])
     num_gen = generators.shape[0]
     if num_gen <= 1:
         return generators
 
     # Get the main loop function for the algorithm
-    main_loop_body = get_loop_body(print_every=print_every)
+    main_loop_body = get_loop_body(generators.shape[-1], print_every=print_every)
     max_dim = max_dim or generators.shape[-1] ** 2
 
     # Initialize the basis
@@ -245,7 +248,7 @@ def lie_closure(
 
     # This would be stupid but possible
     if basis_size >= max_dim:
-        return compose_hermitian(basis_diag[:basis_size], basis_upper[:basis_size])
+        return to_matrix(basis_diag[:basis_size], basis_upper[:basis_size], skew=True)
 
     # Main loop: generate nested commutators
     idx_gen = 0
@@ -279,4 +282,4 @@ def lie_closure(
         max_size += BASIS_ALLOC_UNIT
         basis_diag, basis_upper = _resize_basis(basis_diag, basis_upper, max_size)
 
-    return compose_hermitian(basis_diag[:basis_size], basis_upper[:basis_size])
+    return to_matrix(basis_diag[:basis_size], basis_upper[:basis_size], skew=True)

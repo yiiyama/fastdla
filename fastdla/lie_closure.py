@@ -36,7 +36,7 @@ def lie_basis(
     if isinstance(ops, SparsePauliSumArray):
         from fastdla._lie_closure_impl.sparse_numba import lie_basis as fn
     elif kwargs.get('hermitian', False):
-        from fastdla._lie_closure_impl.hermitian_jax import lie_basis as fn
+        from fastdla._lie_closure_impl.sun_jax import lie_basis as fn
     else:
         from fastdla._lie_closure_impl.matrix_jax import lie_basis as fn
 
@@ -104,9 +104,9 @@ def lie_closure(
         from fastdla._lie_closure_impl.sparse_numba import lie_closure as fn
     elif isinstance(generators, np.ndarray):
         from fastdla._lie_closure_impl.matrix_numba import lie_closure as fn
-    elif kwargs.get('hermitian', False):
-        kwargs.pop('hermitian')
-        from fastdla._lie_closure_impl.hermitian_jax import lie_closure as fn
+    elif kwargs.get('skew_hermitian', False):
+        kwargs.pop('skew_hermitian')
+        from fastdla._lie_closure_impl.sun_jax import lie_closure as fn
     else:
         from fastdla._lie_closure_impl.matrix_jax import lie_closure as fn
 
