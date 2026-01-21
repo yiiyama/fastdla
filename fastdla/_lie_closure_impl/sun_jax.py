@@ -101,11 +101,20 @@ def get_loop_body(matrix_dim: int, print_every: Optional[int] = None):
                 basis_size, icomm, basis_size * generators.shape[0], idx_gen, idx_op)
 
     rows, cols = upper_indices(matrix_dim)
+    to_skew_matrix = partial(to_matrix, skew=True)
+
+    @jax.jit
+    def comm_and_update(generator, op, basis_size, basis_diag, basis_upper):
+        prod = generator @ op
+        diag = -2. * jnp.diagonal(prod).imag
+        upper = prod[rows, cols] - prod.T[rows, cols].conjugate()
+
+        return _update_basis(diag, upper, basis_size, basis_diag, basis_upper)
 
     @jax.jit
     def loop_body(val: tuple) -> tuple:
         """Compute the commutator and update the basis with orthogonal components."""
-        idx_gen, idx_op, basis_size, generators, basis_diag, basis_upper = val
+        idx_gen, idx_op, generators, basis_size, basis_diag, basis_upper, op = val
 
         if print_every > 0:
             icomm = idx_op * generators.shape[0] + idx_gen
@@ -115,21 +124,19 @@ def get_loop_body(matrix_dim: int, print_every: Optional[int] = None):
                 lambda: None
             )
 
-        op = to_matrix(basis_diag[idx_op], basis_upper[idx_op], skew=True)
-        prod = generators[idx_gen] @ op
-        diag = -2. * jnp.diagonal(prod).imag
-        upper = prod[rows, cols] - prod.T[rows, cols].conjugate()
-
-        basis_size, basis_diag, basis_upper = _update_basis(diag, upper, basis_size, basis_diag,
-                                                            basis_upper)
+        basis_size, basis_diag, basis_upper = comm_and_update(generators[idx_gen], op, basis_size,
+                                                              basis_diag, basis_upper)
 
         # Compute the next indices
         idx_gen = (idx_gen + 1) % generators.shape[0]
-        idx_op = jax.lax.select(jnp.equal(idx_gen, 0), idx_op + 1, idx_op)
+        next_op = jnp.equal(idx_gen, 0)
+        idx_op = jax.lax.select(next_op, idx_op + 1, idx_op)
+        op = jax.lax.cond(next_op, to_skew_matrix, lambda d, u: op,
+                          basis_diag[idx_op], basis_upper[idx_op])
 
-        return idx_gen, idx_op, basis_size, generators, basis_diag, basis_upper
+        return idx_gen, idx_op, generators, basis_size, basis_diag, basis_upper, op
 
-    return loop_body
+    return comm_and_update, loop_body
 
 
 def _lie_basis(
@@ -223,7 +230,7 @@ def lie_closure(
         return generators
 
     # Get the main loop function for the algorithm
-    main_loop_body = get_loop_body(generators.shape[-1], print_every=print_every)
+    comm_and_update, main_loop_body = get_loop_body(generators.shape[-1], print_every=print_every)
     max_dim = max_dim or generators.shape[-1] ** 2
 
     # Initialize the basis
@@ -232,19 +239,23 @@ def lie_closure(
 
     # First compute the commutators among the generators
     def set_initial_comms(it, val):
-        _idx_gens, _idx_ops = val[:2]
-        args = (_idx_gens[it], _idx_ops[it]) + val[2:]
-        result = main_loop_body(args)[2:]
-        return val[:2] + result
+        _idx_gens, _idx_ops, _generators, _basis_size, _basis_diag, _basis_upper = val
+        idx_gen = _idx_gens[it]
+        idx_op = _idx_ops[it]
+        generator = _generators[idx_gen]
+        op = to_matrix(_basis_diag[idx_op], _basis_upper[idx_op], skew=True)
+        _basis_size, _basis_diag, _basis_upper = comm_and_update(generator, op, _basis_size,
+                                                                 _basis_diag, _basis_upper)
+        return (_idx_gens, _idx_ops, _generators, _basis_size, _basis_diag, _basis_upper)
 
     idx_gens, idx_ops = np.array(
         [[ig, io] for io in range(num_gen) for ig in range(io)]
     ).T
-    basis_size, generators, basis_diag, basis_upper = jax.lax.fori_loop(
+    basis_size, basis_diag, basis_upper = jax.lax.fori_loop(
         0, len(idx_gens),
         set_initial_comms,
-        (idx_gens, idx_ops, num_gen, generators, basis_diag, basis_upper)
-    )[2:]
+        (idx_gens, idx_ops, generators, num_gen, basis_diag, basis_upper)
+    )[3:]
 
     # This would be stupid but possible
     if basis_size >= max_dim:
@@ -253,19 +264,20 @@ def lie_closure(
     # Main loop: generate nested commutators
     idx_gen = 0
     idx_op = num_gen
+    op = to_matrix(basis_diag[idx_op], basis_upper[idx_op], skew=True)
     while True:  # Outer loop to handle memory reallocation
         LOG.info('Current Lie algebra dimension: %d', basis_size)
         main_loop_start = time.time()
         # Main (inner) loop: iteratively compute the next commutator and update the basis based on
         # the current one
-        idx_gen, idx_op, new_size, generators, basis_diag, basis_upper = jax.lax.while_loop(
+        idx_gen, idx_op, generators, new_size, basis_diag, basis_upper, op = jax.lax.while_loop(
             lambda val: jnp.logical_not(
-                (val[1] == val[2])  # idx_op == new_size -> commutator exhausted
-                | (val[2] == max_dim)  # new_size == max_dim -> reached max dim
-                | (val[2] == val[4].shape[0])  # new_size == array size -> need reallocation
+                (val[1] == val[3])  # idx_op == new_size -> commutator exhausted
+                | (val[3] == max_dim)  # new_size == max_dim -> reached max dim
+                | (val[3] == val[4].shape[0])  # new_size == array size -> need reallocation
             ),
             main_loop_body,
-            (idx_gen, idx_op, basis_size, generators, basis_diag, basis_upper)
+            (idx_gen, idx_op, generators, basis_size, basis_diag, basis_upper, op)
         )
 
         LOG.info('Found %d new ops in %.2fs',
