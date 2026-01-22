@@ -4,7 +4,6 @@ An nxn (skew-)Hermitian matrix is represented by its diagonals (diag(M) or i dia
 the upper triangle excluding the diagonal (n(n-1)/2 complexes).
 """
 from functools import partial
-from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
 import jax
@@ -26,9 +25,14 @@ def innerprod(
 
 
 @jax.jit
+def frobenius_norm(diag: NDArray[np.float64], upper: NDArray[np.complex128]) -> Array:
+    return jnp.sqrt(innerprod(diag, upper, diag, upper))
+
+
+@jax.jit
 def normalize(diag: NDArray[np.float64], upper: NDArray[np.complex128]) -> tuple[Array, Array]:
     """Normalize a Hermitian matrix."""
-    norm = jnp.sqrt(innerprod(diag, upper, diag, upper))
+    norm = frobenius_norm(diag, upper)
     return jax.lax.cond(
         jnp.isclose(norm, 0.),
         lambda _diag, _upper, _norm: (jnp.zeros_like(_diag), jnp.zeros_like(_upper)),
@@ -65,18 +69,17 @@ def to_matrix(
     dim = diag.shape[-1]
     matrix = jnp.zeros((size, dim, dim), dtype=upper.dtype)
     # pylint: disable-next=unbalanced-tuple-unpacking
-    midxs, rows, cols = upper_indices(dim, size)
-    matrix = matrix.at[midxs, rows, cols].set(upper)
+    rows, cols = upper_indices(dim)
+    matrix = matrix.at[:, rows, cols].set(upper)
     if skew:
         matrix -= matrix.conjugate().transpose((0, 2, 1))
     else:
         matrix += matrix.conjugate().transpose((0, 2, 1))
-    didxs = np.tile(np.arange(dim)[None, ...], (size, 1))
-    midxs = np.repeat(np.arange(size)[:, None], dim, axis=1)
+    didxs = np.arange(dim)
     if skew:
-        matrix = matrix.at[midxs, didxs, didxs].set(-1.j * diag)
+        matrix = matrix.at[:, didxs, didxs].set(-1.j * diag)
     else:
-        matrix = matrix.at[midxs, didxs, didxs].set(diag)
+        matrix = matrix.at[:, didxs, didxs].set(diag)
     if squeeze:
         return matrix[0]
     return matrix
@@ -90,27 +93,20 @@ def from_matrix(
     if (squeeze := len(matrix.shape) == 2):
         matrix = matrix[None, ...]
 
-    size = matrix.shape[0]
     dim = matrix.shape[-1]
     if skew:
         diag = -jnp.diagonal(matrix, axis1=1, axis2=2).imag
     else:
         diag = jnp.diagonal(matrix, axis1=1, axis2=2).real
     # pylint: disable-next=unbalanced-tuple-unpacking
-    midxs, rows, cols = upper_indices(dim, size)
-    upper = matrix[midxs, rows, cols]
+    rows, cols = upper_indices(dim)
+    upper = matrix[:, rows, cols]
     if squeeze:
         return diag[0], upper[0]
     return diag, upper
 
 
-def upper_indices(dim: int, size: Optional[int] = None) -> tuple[np.ndarray, ...]:
+def upper_indices(dim: int) -> tuple[np.ndarray, np.ndarray]:
     rows = np.array(sum(([i] * (dim - i - 1) for i in range(dim - 1)), []))
     cols = np.array(sum((list(range(i + 1, dim)) for i in range(dim - 1)), []))
-    if size is None:
-        return rows, cols
-
-    rows = np.tile(rows[None, ...], (size, 1))
-    cols = np.tile(cols[None, ...], (size, 1))
-    midxs = np.repeat(np.arange(size)[:, None], rows.shape[-1], axis=1)
-    return midxs, rows, cols
+    return rows, cols

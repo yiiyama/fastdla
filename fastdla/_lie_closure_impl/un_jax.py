@@ -1,5 +1,5 @@
 # pylint: disable=unused-argument
-"""Implementation of the Lie closure generator optimized for (anti-)Hermitian matrices using JAX."""
+"""Implementation of the Lie closure generator optimized for skew-Hermitian matrices using JAX."""
 from collections.abc import Sequence
 from functools import partial
 import logging
@@ -9,7 +9,7 @@ import numpy as np
 import jax
 from jax import Array
 import jax.numpy as jnp
-from fastdla.linalg.hermitian_ops_jax import (innerprod, normalize, orthogonalize, to_matrix,
+from fastdla.linalg.hermitian_ops_jax import (frobenius_norm, normalize, orthogonalize, to_matrix,
                                               from_matrix, upper_indices)
 from fastdla._lie_closure_impl.algorithms import Algorithms
 
@@ -17,30 +17,14 @@ LOG = logging.getLogger(__name__)
 BASIS_ALLOC_UNIT = 1024
 
 
-@jax.jit
-def _has_orthcomp(
-    diag: Array,
-    upper: Array,
-    basis_diag: Array,
-    basis_upper: Array
-) -> tuple[bool, Array, Array]:
-    orth_diag, orth_upper = orthogonalize(diag, upper, basis_diag, basis_upper)
-    orth_diag, orth_upper = normalize(orth_diag, orth_upper)
-    orth_diag, orth_upper = orthogonalize(orth_diag, orth_upper, basis_diag, basis_upper)
-    norm = jnp.sqrt(innerprod(orth_diag, orth_upper, orth_diag, orth_upper))
-    return jnp.isclose(norm, 1., rtol=1.e-5), orth_diag / norm, orth_upper / norm
-
-
 @partial(jax.jit, static_argnums=[0])
 def _zeros_with_entries(size: int, init_diag: Array, init_upper: Array) -> tuple[Array, Array]:
-    diag = jnp.zeros((size, init_diag.shape[1]), dtype=init_diag.dtype)
-    upper = jnp.zeros((size, init_upper.shape[1]), dtype=init_upper.dtype)
-    return (diag.at[:init_diag.shape[0]].set(init_diag),
-            upper.at[:init_upper.shape[0]].set(init_upper))
+    pad_width = ((0, size - init_diag.shape[0]), (0, 0))
+    return jnp.pad(init_diag, pad_width), jnp.pad(init_upper, pad_width)
 
 
 @jax.jit
-def _update_gs_direct(
+def _update_if_independent(
     diag: Array,
     upper: Array,
     pos: int,
@@ -48,38 +32,29 @@ def _update_gs_direct(
     basis_upper: Array
 ) -> tuple[bool, Array, Array]:
     """Update the basis if op has an orthogonal component."""
-    def _update(_orth_diag, _orth_upper, _basis_diag, _basis_upper, _pos):
-        return (_basis_diag.at[_pos].set(_orth_diag), _basis_upper.at[_pos].set(_orth_upper))
+    def _double_check(_norm, _diag, _upper, _basis_diag, _basis_upper):
+        _diag /= _norm
+        _upper /= _norm
+        _norm = frobenius_norm(*orthogonalize(_diag, _upper, _basis_diag, _basis_upper))
+        return jnp.isclose(_norm, 1., rtol=1.e-5), _diag, _upper
 
-    has_orthcomp, orth_diag, orth_upper = _has_orthcomp(diag, upper, basis_diag, basis_upper)
-    basis_diag, basis_upper = jax.lax.cond(
+    def _update(_orth_diag, _orth_upper, _pos, _basis_diag, _basis_upper):
+        return (_pos + 1, _basis_diag.at[_pos].set(_orth_diag),
+                _basis_upper.at[_pos].set(_orth_upper))
+
+    orth_diag, orth_upper = orthogonalize(diag, upper, basis_diag, basis_upper)
+    norm = frobenius_norm(orth_diag, orth_upper)
+    has_orthcomp, orth_diag, orth_upper = jax.lax.cond(
+        jnp.isclose(norm, 0.),
+        lambda n, d, u, bd, bu: (False, d, u),
+        _double_check,
+        norm, orth_diag, orth_upper, basis_diag, basis_upper
+    )
+    return jax.lax.cond(
         has_orthcomp,
         _update,
-        lambda a, b, _basis_diag, _basis_upper, c: (_basis_diag, _basis_upper),
-        orth_diag, orth_upper, basis_diag, basis_upper, pos
-    )
-    return has_orthcomp, basis_diag, basis_upper
-
-
-@jax.jit
-def _update_basis(
-    diag: Array,
-    upper: Array,
-    basis_size: int,
-    basis_diag: Array,
-    basis_upper: Array
-) -> tuple[int, Array, Array]:
-    def update_with_norm(_diag, _upper, _basis_size, _basis_diag, _basis_upper):
-        _diag, _upper = normalize(_diag, _upper)
-        up, bd, bu = _update_gs_direct(_diag, _upper, _basis_size, _basis_diag, _basis_upper)
-        return jax.lax.select(up, _basis_size + 1, _basis_size), bd, bu
-
-    # If non-null, call the updater function
-    return jax.lax.cond(
-        jnp.logical_and(jnp.allclose(basis_diag, 0.), jnp.allclose(basis_upper, 0.)),
-        lambda a, b, bs, bd, bu: (bs, bd, bu),
-        update_with_norm,
-        diag, upper, basis_size, basis_diag, basis_upper
+        lambda d, u, p, bd, bu: (p, bd, bu),
+        orth_diag, orth_upper, pos, basis_diag, basis_upper
     )
 
 
@@ -108,8 +83,12 @@ def get_loop_body(matrix_dim: int, print_every: Optional[int] = None):
         prod = generator @ op
         diag = -2. * jnp.diagonal(prod).imag
         upper = prod[rows, cols] - prod.T[rows, cols].conjugate()
-
-        return _update_basis(diag, upper, basis_size, basis_diag, basis_upper)
+        return jax.lax.cond(
+            jnp.logical_and(jnp.allclose(diag, 0.), jnp.allclose(upper, 0.)),
+            lambda d, u, bs, bd, bu: (bs, bd, bu),
+            _update_if_independent,
+            diag, upper, basis_size, basis_diag, basis_upper
+        )
 
     @jax.jit
     def loop_body(val: tuple) -> tuple:
@@ -131,9 +110,12 @@ def get_loop_body(matrix_dim: int, print_every: Optional[int] = None):
         idx_gen = (idx_gen + 1) % generators.shape[0]
         next_op = jnp.equal(idx_gen, 0)
         idx_op = jax.lax.select(next_op, idx_op + 1, idx_op)
-        op = jax.lax.cond(next_op, to_skew_matrix, lambda d, u: op,
-                          basis_diag[idx_op], basis_upper[idx_op])
-
+        op = jax.lax.cond(
+            next_op,
+            to_skew_matrix,
+            lambda d, u: op,
+            basis_diag[idx_op], basis_upper[idx_op]
+        )
         return idx_gen, idx_op, generators, basis_size, basis_diag, basis_upper, op
 
     return comm_and_update, loop_body
@@ -156,7 +138,7 @@ def _lie_basis(
 
     def _update(iop, val):
         bsize, bdiag, bupper = val
-        return _update_basis(diag[iop], upper[iop], bsize, bdiag, bupper)
+        return _update_if_independent(diag[iop], upper[iop], bsize, bdiag, bupper)
 
     size, basis_diag, basis_upper = jax.lax.fori_loop(
         1, nops,
@@ -294,4 +276,5 @@ def lie_closure(
         max_size += BASIS_ALLOC_UNIT
         basis_diag, basis_upper = _resize_basis(basis_diag, basis_upper, max_size)
 
+    LOG.info('Converting matrix parts into matrices and returning')
     return to_matrix(basis_diag[:basis_size], basis_upper[:basis_size], skew=True)
