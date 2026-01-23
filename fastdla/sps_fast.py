@@ -73,10 +73,10 @@ def sps_add_fast(
     if lhs.num_qubits != lhs.num_qubits:
         raise ValueError('Sum between incompatible SparsePauliSums')
     if lhs.num_terms * lhs.num_terms == 0:
-        return SparsePauliSum([], [], lhs.num_qubits, no_check=True)
+        return SparsePauliSum([], [], num_qubits=lhs.num_qubits, no_check=True)
 
     indices, coeffs = _sps_add_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs, normalize)
-    return SparsePauliSum(indices, coeffs, lhs.num_qubits, no_check=True)
+    return SparsePauliSum(indices, coeffs, num_qubits=lhs.num_qubits, no_check=True)
 
 
 @njit(nogil=True)
@@ -113,11 +113,11 @@ def sps_matmul_fast(
     if lhs.num_qubits != lhs.num_qubits:
         raise ValueError('Matmul between incompatible SparsePauliSums')
     if lhs.num_terms * lhs.num_terms == 0:
-        return SparsePauliSum([], [], lhs.num_qubits, no_check=True)
+        return SparsePauliSum([], [], num_qubits=lhs.num_qubits, no_check=True)
 
     indices, coeffs = _sps_matmul_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs,
                                        lhs.num_qubits, normalize)
-    return SparsePauliSum(indices, coeffs, lhs.num_qubits, no_check=True)
+    return SparsePauliSum(indices, coeffs, num_qubits=lhs.num_qubits, no_check=True)
 
 
 @njit(nogil=True)
@@ -161,11 +161,11 @@ def sps_commutator_fast(
     if lhs.num_qubits != lhs.num_qubits:
         raise ValueError('Commutator between incompatible SparsePauliSums')
     if lhs.num_terms * lhs.num_terms == 0:
-        return SparsePauliSum([], [], lhs.num_qubits, no_check=True)
+        return SparsePauliSum([], [], num_qubits=lhs.num_qubits, no_check=True)
 
     indices, coeffs = _sps_commutator_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs,
                                            lhs.num_qubits, normalize)
-    return SparsePauliSum(indices, coeffs, lhs.num_qubits, no_check=True)
+    return SparsePauliSum(indices, coeffs, num_qubits=lhs.num_qubits, no_check=True)
 
 
 def _sps_dot_fast_impl(
@@ -206,7 +206,7 @@ def sps_dot_fast(lhs: SparsePauliSum, rhs: SparsePauliSum) -> complex:
     if lhs.num_qubits != lhs.num_qubits:
         raise ValueError('Inner product between incompatible SparsePauliSums')
     if lhs.num_terms * lhs.num_terms == 0:
-        return SparsePauliSum([], [], lhs.num_qubits, no_check=True)
+        return SparsePauliSum([], [], num_qubits=lhs.num_qubits, no_check=True)
 
     return _sps_dot_fast(lhs.indices, lhs.coeffs, rhs.indices, rhs.coeffs)
 
