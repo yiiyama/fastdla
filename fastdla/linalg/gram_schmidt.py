@@ -1,5 +1,4 @@
 """Vector orthogonalization and the Gram-Schmidt process."""
-from collections.abc import Callable
 from typing import Optional
 import numpy as np
 try:
@@ -30,7 +29,6 @@ def orthogonalize(
     vector: np.ndarray,
     basis: np.ndarray,
     basis_size: Optional[int] = None,
-    innerprod: Callable[[np.ndarray, np.ndarray], complex] = inner_product,
     npmod=np
 ) -> np.ndarray:
     """Compute the orthogonal component of a vector with respect to an orthonormal basis.
@@ -45,12 +43,11 @@ def orthogonalize(
     """
     if basis_size is not None:
         basis = basis[:basis_size]
-    return vector - npmod.tensordot(innerprod(basis, vector, npmod=npmod), basis, [[0], [0]])
+    return vector - npmod.tensordot(inner_product(basis, vector, npmod=npmod), basis, [[0], [0]])
 
 
 def normalize(
     vector: np.ndarray,
-    innerprod: Callable[[np.ndarray, np.ndarray], complex] = inner_product,
     npmod=np
 ) -> tuple[np.ndarray, float]:
     """Normalize a vector.
@@ -62,16 +59,15 @@ def normalize(
     Returns:
         Normalized vector and the norm of the original vector.
     """
-    norm = npmod.sqrt(innerprod(vector, vector, npmod=npmod).real)
+    norm = npmod.sqrt(npmod.sum(npmod.square(npmod.abs(vector)), axis=-1, keepdims=True))
     is_null = npmod.isclose(norm, 0.)
-    return npmod.where(is_null, 0., vector) / npmod.where(is_null, 1., norm), norm
+    return npmod.where(is_null, 0., vector) / npmod.where(is_null, 1., norm), npmod.squeeze(norm)
 
 
 def orthonormalize(
     vector: np.ndarray,
     basis: np.ndarray,
     basis_size: Optional[int] = None,
-    innerprod: Callable[[np.ndarray, np.ndarray], complex] = inner_product,
     npmod=np
 ) -> tuple[bool, np.ndarray, float]:
     """Normalize the orthogonal component of a vector with respect to a basis.
@@ -89,10 +85,10 @@ def orthonormalize(
         A flag indicating the existence of an orthogonal component, the orthonormalized vector, and
         the norm of the orthogonal component.
     """
-    orth = orthogonalize(vector, basis, basis_size=basis_size, innerprod=innerprod, npmod=npmod)
-    orth, norm = normalize(orth, innerprod=innerprod, npmod=npmod)
-    reorth = orthogonalize(orth, basis, basis_size=basis_size, innerprod=innerprod, npmod=npmod)
-    reorth, renorm = normalize(reorth, innerprod=innerprod, npmod=npmod)
+    orth = orthogonalize(vector, basis, basis_size=basis_size, npmod=npmod)
+    orth, norm = normalize(orth, npmod=npmod)
+    reorth = orthogonalize(orth, basis, basis_size=basis_size, npmod=npmod)
+    reorth, renorm = normalize(reorth, npmod=npmod)
     return npmod.isclose(renorm, 1.), reorth, norm
 
 
@@ -100,12 +96,10 @@ def _gram_schmidt_update(
     vector: np.ndarray,
     basis: np.ndarray,
     basis_size: Optional[int] = None,
-    innerprod: Callable[[np.ndarray, np.ndarray], complex] = inner_product,
     npmod=np
 ) -> tuple[np.ndarray, int | None]:
     """Identify the orthogonal component and update the basis."""
-    has_orth, orth, _ = orthonormalize(vector, basis, basis_size=basis_size, innerprod=innerprod,
-                                       npmod=npmod)
+    has_orth, orth, _ = orthonormalize(vector, basis, basis_size=basis_size, npmod=npmod)
 
     if npmod is np:
         if has_orth:
@@ -130,7 +124,6 @@ def gram_schmidt(
     vectors: np.ndarray,
     basis: Optional[np.ndarray] = None,
     basis_size: Optional[int] = None,
-    innerprod: Callable[[np.ndarray, np.ndarray], complex] = inner_product,
     npmod=np
 ) -> np.ndarray | tuple[np.ndarray, int]:
     """Construct an orthonormal basis from an array of vectors through the Gram-Schmidt process.
@@ -144,7 +137,6 @@ def gram_schmidt(
             basis. If given as an int, newly found basis vectors are placed into the basis array
             starting from this position. If None, the new vectors are concatenated to the basis
             array.
-        innerprod: A function that computes the inner product of two vectors.
 
     Returns:
         A full array of orthonormal vectors that span the space that is spanned by the given vectors
@@ -157,13 +149,12 @@ def gram_schmidt(
     if basis is None:
         if vectors.shape[0] == 0:
             return npmod.empty((0, vectors.shape[1]), dtype=vectors.dtype)
-        basis = normalize(vectors[0], innerprod=innerprod, npmod=npmod)[0][None, :]
+        basis = normalize(vectors[0], npmod=npmod)[0][None, :]
         basis_size = None
         start = 1
 
     for vector in vectors[start:]:
-        basis, basis_size = _gram_schmidt_update(vector, basis, basis_size=basis_size,
-                                                 innerprod=innerprod, npmod=npmod)
+        basis, basis_size = _gram_schmidt_update(vector, basis, basis_size=basis_size, npmod=npmod)
 
     if basis_size is None:
         return basis
