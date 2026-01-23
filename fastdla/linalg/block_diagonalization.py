@@ -8,7 +8,7 @@ except ImportError:
     jnp = None
     jrandom = None
 
-from .gram_schmidt import gram_schmidt, orthonormalize
+from .gram_schmidt import gram_schmidt
 
 LOG = logging.getLogger(__name__)
 
@@ -85,62 +85,60 @@ def sbd_fast(
             randmat += npmod.sum(normal((apart.shape[0], 1, 1)) * apart, axis=0)
 
         LOG.debug('Diagonalizing the random matrix..')
-        _, eigvecs = npmod.linalg.eigh(randmat)
-        LOG.debug('Done. %d eigvecs', eigvecs.shape[1])
+        seeds = npmod.linalg.eigh(randmat)[1].T
+        LOG.debug('Done. %d eigvecs', seeds.shape[0])
 
         transform = npmod.empty((dim, dim), dtype=matrices.dtype)
-        num_identified = 0
-        evec_idx = 0
-
+        basis_size = 0
         block_sizes = []
+        while basis_size < dim:
+            LOG.debug('Starting with transform matrix size: %d', basis_size)
+            seed = seeds[basis_size]
 
-        while num_identified < dim:
-            LOG.debug('Starting block construction at %dth eigenvector', evec_idx)
-            while evec_idx < dim:
-                has_orth, vec, _ = orthonormalize(eigvecs[:, evec_idx], transform,
-                                                  basis_size=num_identified, npmod=npmod)
-                evec_idx += 1
-                if has_orth:
-                    break
-            else:
-                raise ValueError('Non-orthogonal eigenvectors? Exhausted eigenvectors of random'
-                                 ' matrix before completing the unitary.')
-
-            LOG.debug('Found a new dimension at %dth eigenvector. Performing Gram-Schmidt..',
-                      evec_idx)
-
-            block_basis = npmod.empty_like(transform)
             if npmod is np:
-                block_basis[0] = vec
+                transform[basis_size] = seed
             elif npmod is jnp:
-                block_basis = block_basis.at[0].set(vec)
-            block_basis, basis_size = gram_schmidt(matrices_combined @ vec, basis=block_basis,
-                                                   basis_size=1, npmod=npmod)
+                transform = transform.at[basis_size].set(seed)
+            transform, new_size = gram_schmidt(matrices_combined @ seed, basis=transform,
+                                               basis_size=basis_size + 1, npmod=npmod)
 
-            LOG.debug('Done. New block basis size %d', basis_size)
+            LOG.debug('Done. New block basis size %d', new_size)
 
-            while True:
+            num_no_change = 0
+            while num_no_change < 3:
                 LOG.debug('Performing Gram-Schmidt on random vectors from the block basis..')
-                vrand = npmod.sum(block_basis[:basis_size] * normal((basis_size, 1)), axis=0)
+                block_size = new_size - basis_size
+                vrand = npmod.sum(transform[basis_size:new_size] * normal((block_size, 1)),
+                                  axis=0)
                 if matrices.dtype == np.complex128:
-                    vrand += 1.j * npmod.sum(block_basis[:basis_size] * normal((basis_size, 1)),
-                                             axis=0)
+                    vrand += npmod.sum(transform[basis_size:new_size] * normal((block_size, 1)),
+                                       axis=0) * 1.j
 
-                current_size = basis_size
-                block_basis, basis_size = gram_schmidt(matrices_combined @ vrand, basis=block_basis,
-                                                       basis_size=current_size, npmod=npmod)
-                LOG.debug('Done. New block basis size %d', basis_size)
-                if basis_size == current_size:
-                    break
+                current_size = new_size
+                transform, new_size = gram_schmidt(matrices_combined @ vrand, basis=transform,
+                                                   basis_size=current_size, npmod=npmod)
+                LOG.debug('Done. New block basis size %d', new_size)
+                if new_size == current_size:
+                    num_no_change += 1
+                else:
+                    num_no_change = 0
+            LOG.debug('Block basis size plateaued. Saving the block.')
 
-            current_num = num_identified
-            num_identified += basis_size
-            if npmod is np:
-                transform[current_num:num_identified] = block_basis[:basis_size]
-            elif npmod is jnp:
-                transform = transform.at[current_num:num_identified].set(block_basis[:basis_size])
+            block_sizes.append(new_size - basis_size)
+            basis_size = new_size
 
-            block_sizes.append(basis_size)
+            # Orthogonalize the seeds wrt current basis
+            # If randmat is non-degenerate, the identified basis vectors so far in transform should
+            # be orthogonal to the remaining seeds. (We have identified a subspace that is spanned
+            # by some combination of the eigenvectors of the input matrices, which would therefore
+            # be orthogonal to eigenvectors that do not belong to the subspace). When there are
+            # degeneracies, the basis for the degenerate subspace that eigh chooses may not coincide
+            # with the subspace structure. We can use another round of Gram-Schmidt to separate the
+            # seed eigenvectors in and out of the identified subspaces.
+            # The degeneracy of randmat can occur if the matrices have shared degeneracies or under
+            # some special configurations.
+            # Also, by performing GS here, the next seed is trivially given by seeds[num_identified]
+            seeds = gram_schmidt(seeds, basis=transform, basis_size=basis_size)[0]
 
         if len(block_sizes) > finest_decomposition:
             LOG.debug('Found the finest block decomposition so far: block sizes %s', block_sizes)
