@@ -1,4 +1,5 @@
 """Vector orthogonalization and the Gram-Schmidt process."""
+import logging
 from typing import Optional
 import numpy as np
 try:
@@ -7,6 +8,8 @@ try:
 except ImportError:
     jax = None
     jnp = None
+
+LOG = logging.getLogger(__name__)
 
 
 def inner_product(vec1: np.ndarray, vec2: np.ndarray, npmod=np) -> np.ndarray:
@@ -48,6 +51,7 @@ def orthogonalize(
 
 def normalize(
     vector: np.ndarray,
+    cutoff: float = 1.e-08,
     npmod=np
 ) -> tuple[np.ndarray, float]:
     """Normalize a vector.
@@ -60,14 +64,16 @@ def normalize(
         Normalized vector and the norm of the original vector.
     """
     norm = npmod.sqrt(npmod.sum(npmod.square(npmod.abs(vector)), axis=-1, keepdims=True))
-    is_null = npmod.isclose(norm, 0.)
-    return npmod.where(is_null, 0., vector) / npmod.where(is_null, 1., norm), npmod.squeeze(norm)
+    is_null = npmod.isclose(norm, 0., atol=cutoff)
+    return (npmod.where(is_null, 0., vector) / npmod.where(is_null, 1., norm),
+            npmod.squeeze(npmod.where(is_null, 0., norm)))
 
 
 def orthonormalize(
     vector: np.ndarray,
     basis: np.ndarray,
     basis_size: Optional[int] = None,
+    cutoff: float = 1.e-08,
     npmod=np
 ) -> tuple[bool, np.ndarray, float]:
     """Normalize the orthogonal component of a vector with respect to a basis.
@@ -86,20 +92,32 @@ def orthonormalize(
         the norm of the orthogonal component.
     """
     orth = orthogonalize(vector, basis, basis_size=basis_size, npmod=npmod)
-    orth, norm = normalize(orth, npmod=npmod)
+    orth, norm = normalize(orth, cutoff=cutoff, npmod=npmod)
+    LOG.debug('Direct orthogonalization found an orth component with norm %.3e', norm)
+    if norm == 0.:
+        return False, npmod.zeros_like(orth), npmod.zeros_like(norm)
     reorth = orthogonalize(orth, basis, basis_size=basis_size, npmod=npmod)
-    reorth, renorm = normalize(reorth, npmod=npmod)
+    reorth, renorm = normalize(reorth, cutoff=cutoff, npmod=npmod)
+    LOG.debug('Re-orthogonalization found an orth component with norm %.3e', renorm)
     return npmod.isclose(renorm, 1.), reorth, norm
 
 
 def _gram_schmidt_update(
     vector: np.ndarray,
     basis: np.ndarray,
-    basis_size: Optional[int] = None,
-    npmod=np
+    basis_size: int | None,
+    cutoff: float,
+    npmod
 ) -> tuple[np.ndarray, int | None]:
     """Identify the orthogonal component and update the basis."""
-    has_orth, orth, _ = orthonormalize(vector, basis, basis_size=basis_size, npmod=npmod)
+    has_orth, orth, _ = orthonormalize(vector, basis, basis_size=basis_size, cutoff=cutoff,
+                                       npmod=npmod)
+
+    if LOG.getEffectiveLevel() <= logging.DEBUG:
+        if has_orth:
+            LOG.debug('Found an orthogonal component. Updating basis to size %d', basis_size + 1)
+        else:
+            LOG.debug('No orthogonal component found.')
 
     if npmod is np:
         if has_orth:
@@ -124,6 +142,7 @@ def gram_schmidt(
     vectors: np.ndarray,
     basis: Optional[np.ndarray] = None,
     basis_size: Optional[int] = None,
+    cutoff: float = 1.e-08,
     npmod=np
 ) -> np.ndarray | tuple[np.ndarray, int]:
     """Construct an orthonormal basis from an array of vectors through the Gram-Schmidt process.
@@ -149,12 +168,12 @@ def gram_schmidt(
     if basis is None:
         if vectors.shape[0] == 0:
             return npmod.empty((0, vectors.shape[1]), dtype=vectors.dtype)
-        basis = normalize(vectors[0], npmod=npmod)[0][None, :]
+        basis = normalize(vectors[0], cutoff=cutoff, npmod=npmod)[0][None, :]
         basis_size = None
         start = 1
 
     for vector in vectors[start:]:
-        basis, basis_size = _gram_schmidt_update(vector, basis, basis_size=basis_size, npmod=npmod)
+        basis, basis_size = _gram_schmidt_update(vector, basis, basis_size, cutoff, npmod)
 
     if basis_size is None:
         return basis

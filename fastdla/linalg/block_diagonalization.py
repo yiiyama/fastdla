@@ -7,8 +7,7 @@ try:
 except ImportError:
     jnp = None
     jrandom = None
-
-from .gram_schmidt import gram_schmidt
+from fastdla.linalg.gram_schmidt import gram_schmidt
 
 LOG = logging.getLogger(__name__)
 
@@ -19,6 +18,7 @@ def sbd_fast(
     krylov_dim: int = 1,
     num_randgen: int = 1,
     seed: int = 0,
+    orth_cutoff: float = 1.e-08,
     return_blocks: bool = False,
     npmod=np
 ) -> np.ndarray | tuple[np.ndarray, list[np.ndarray]]:
@@ -100,14 +100,15 @@ def sbd_fast(
             elif npmod is jnp:
                 transform = transform.at[basis_size].set(seed)
             transform, new_size = gram_schmidt(matrices_combined @ seed, basis=transform,
-                                               basis_size=basis_size + 1, npmod=npmod)
+                                               basis_size=basis_size + 1, cutoff=orth_cutoff,
+                                               npmod=npmod)
 
-            LOG.debug('Done. New block basis size %d', new_size)
+            block_size = new_size - basis_size
+            LOG.debug('Done checking matrices @ seed. New block basis size %d', block_size)
 
             num_no_change = 0
             while num_no_change < 3:
                 LOG.debug('Performing Gram-Schmidt on random vectors from the block basis..')
-                block_size = new_size - basis_size
                 vrand = npmod.sum(transform[basis_size:new_size] * normal((block_size, 1)),
                                   axis=0)
                 if matrices.dtype == np.complex128:
@@ -116,15 +117,18 @@ def sbd_fast(
 
                 current_size = new_size
                 transform, new_size = gram_schmidt(matrices_combined @ vrand, basis=transform,
-                                                   basis_size=current_size, npmod=npmod)
-                LOG.debug('Done. New block basis size %d', new_size)
+                                                   basis_size=current_size, cutoff=orth_cutoff,
+                                                   npmod=npmod)
+                block_size = new_size - basis_size
+                LOG.debug('Done checking random (iteration %d). New block basis size %d',
+                          num_no_change, block_size)
                 if new_size == current_size:
                     num_no_change += 1
                 else:
                     num_no_change = 0
-            LOG.debug('Block basis size plateaued. Saving the block.')
+            LOG.debug('Block basis size plateaued. Saving the block and re-orthogonalizing seeds.')
 
-            block_sizes.append(new_size - basis_size)
+            block_sizes.append(block_size)
             basis_size = new_size
 
             # Orthogonalize the seeds wrt current basis
@@ -138,7 +142,10 @@ def sbd_fast(
             # The degeneracy of randmat can occur if the matrices have shared degeneracies or under
             # some special configurations.
             # Also, by performing GS here, the next seed is trivially given by seeds[num_identified]
-            seeds = gram_schmidt(seeds, basis=transform, basis_size=basis_size)[0]
+            # Argument `basis`` must be given as a copy of transform because the returned array is
+            # the same object as this input in the numpy implementation.
+            seeds = gram_schmidt(seeds, basis=transform.copy(), basis_size=basis_size,
+                                 cutoff=orth_cutoff)[0]
 
         if len(block_sizes) > finest_decomposition:
             LOG.debug('Found the finest block decomposition so far: block sizes %s', block_sizes)
