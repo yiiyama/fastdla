@@ -11,27 +11,31 @@ def innerprod(op1: Array, op2: Array) -> Array:
 
 
 @jax.jit
-def normalize(op: Array) -> Array:
-    """Normalize a matrix."""
-    norm = jnp.sqrt(innerprod(op, op))
-    return jax.lax.cond(
-        jnp.isclose(norm, 0.),
-        lambda _op, _norm: jnp.zeros_like(_op),
-        lambda _op, _norm: _op / _norm,
-        op, norm
-    )
+def norm(op: Array) -> Array:
+    shape = op.shape
+    vec = op.reshape(shape[:-2] + (-1,))
+    return jnp.sqrt(jnp.vecdot(vec, vec) / shape[-1])
 
 
 @jax.jit
-def orthogonalize(
+def normalize(op: Array, cutoff: float = 1.e-8) -> Array:
+    """Normalize a matrix."""
+    op_norm = norm(op)[..., None]
+    is_null = jnp.isclose(op_norm, 0., atol=cutoff)
+    return (jnp.where(is_null, 0., op) / jnp.where(is_null, 1., op_norm),
+            jnp.where(is_null[..., 0], 0., op_norm[..., 0]))
+
+
+@jax.jit
+def project(
     op: Array,
     basis: Array
 ) -> Array:
     """Extract the orthogonal component of an operator with respect to an orthonormal basis."""
     # What we want is for the second term is
-    #   jnp.tensordot(innerprod(basis, new_op), basis, [[0], [0]])
+    #   jnp.tensordot(innerprod(basis, op), basis, [[0], [0]])
     # but we instead compute the conjugate of the innerprod to reduce the number of computation
-    return op - jnp.tensordot(innerprod(op, basis).conjugate(), basis, [[0], [0]])
+    return jnp.tensordot(innerprod(op, basis).conjugate(), basis, [[0], [0]])
 
 
 @jax.jit

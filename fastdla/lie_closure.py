@@ -34,13 +34,16 @@ def lie_basis(
         ops = SparsePauliSumArray(ops)
 
     if isinstance(ops, SparsePauliSumArray):
+        kwargs['algorithm'] = algorithm
+        kwargs['return_aux'] = return_aux
         from fastdla._lie_closure_impl.sparse_numba import lie_basis as fn
-    elif kwargs.get('hermitian', False):
+    elif kwargs.get('skew_hermitian', False):
+        kwargs.pop('skew_hermitian')
         from fastdla._lie_closure_impl.un_jax import lie_basis as fn
     else:
         from fastdla._lie_closure_impl.matrix_jax import lie_basis as fn
 
-    return fn(ops, algorithm=algorithm, return_aux=return_aux, **kwargs)
+    return fn(ops, **kwargs)
 
 
 def lie_closure(
@@ -101,13 +104,22 @@ def lie_closure(
         generators = SparsePauliSumArray(generators)
 
     if isinstance(generators, SparsePauliSumArray):
+        kwargs['algorithm'] = algorithm
+        kwargs['return_aux'] = return_aux
         from fastdla._lie_closure_impl.sparse_numba import lie_closure as fn
     elif isinstance(generators, np.ndarray):
+        kwargs['algorithm'] = algorithm
+        kwargs['return_aux'] = return_aux
         from fastdla._lie_closure_impl.matrix_numba import lie_closure as fn
+    elif kwargs.get('ref_impl', False):
+        kwargs.pop('ref_impl')
+        kwargs['algorithm'] = algorithm
+        kwargs['return_aux'] = return_aux
+        from fastdla._lie_closure_impl.matrix_jax_ref import lie_closure as fn
     elif kwargs.get('skew_hermitian', False):
         kwargs.pop('skew_hermitian')
         from fastdla._lie_closure_impl.un_jax import lie_closure as fn
     else:
         from fastdla._lie_closure_impl.matrix_jax import lie_closure as fn
 
-    return fn(generators, max_dim=max_dim, algorithm=algorithm, return_aux=return_aux, **kwargs)
+    return fn(generators, max_dim=max_dim, **kwargs)
