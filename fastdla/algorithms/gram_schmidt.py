@@ -10,7 +10,7 @@ try:
 except ImportError:
     jax = None
     jnp = None
-from fastdla.linalg.vector_ops import normalize, project
+from fastdla.linalg.vector_ops import innerprod, norm
 
 LOG = logging.getLogger(__name__)
 
@@ -19,8 +19,8 @@ def orthonormalize(
     vector: NDArray,
     basis: NDArray,
     cutoff: float = 1.e-08,
-    project_op: Callable[[NDArray, NDArray], NDArray] = project,
-    normalize_op: Callable[[NDArray, float], NDArray] = normalize,
+    innerprod_op: Callable[[NDArray, NDArray], NDArray] = innerprod,
+    norm_op: Callable[[NDArray], NDArray] = norm,
     npmod=np
 ) -> tuple[bool, NDArray, float]:
     """Normalize the orthogonal component of a vector with respect to a basis.
@@ -39,8 +39,15 @@ def orthonormalize(
         the norm of the orthogonal component.
     """
     def _orthonormalize(_vector):
-        orth = _vector - project_op(_vector, basis)
-        return normalize_op(orth, cutoff=cutoff)
+        # What we want is
+        #   jnp.tensordot(innerprod(basis, op), basis, [[0], [0]])
+        # but we instead compute the conjugate of the innerprod to reduce the number of computation
+        projection = npmod.tensordot(innerprod_op(_vector, basis).conjugate(), basis, [[0], [0]])
+        orth = _vector - projection
+        onorm = norm_op(orth)[..., None]
+        is_null = jnp.isclose(onorm, 0., atol=cutoff)
+        return (jnp.where(is_null, 0., orth) / jnp.where(is_null, 1., onorm),
+                jnp.where(is_null[..., 0], 0., onorm[..., 0]))
 
     orth, vnorm = _orthonormalize(vector)
     if npmod is np:
@@ -66,13 +73,13 @@ def _gram_schmidt_update(
     basis: NDArray,
     basis_size: int | None,
     cutoff: float,
-    project_op,
-    normalize_op,
-    npmod
+    innerprod_op,
+    norm_op,
+    npmod=np
 ) -> tuple[NDArray, int | None]:
     """Identify the orthogonal component and update the basis."""
-    has_orth, orth, _ = orthonormalize(vector, basis, cutoff=cutoff, project_op=project_op,
-                                       normalize_op=normalize_op, npmod=npmod)
+    has_orth, orth, _ = orthonormalize(vector, basis, cutoff=cutoff, innerprod_op=innerprod_op,
+                                       norm_op=norm_op, npmod=npmod)
 
     if npmod is np:
         if LOG.getEffectiveLevel() <= logging.DEBUG:
@@ -105,8 +112,8 @@ def gram_schmidt(
     basis: Optional[np.ndarray] = None,
     basis_size: Optional[int] = None,
     cutoff: float = 1.e-08,
-    project_op: Callable[[NDArray, NDArray], NDArray] = project,
-    normalize_op: Callable[[NDArray, float], NDArray] = normalize,
+    innerprod_op: Callable[[NDArray, NDArray], NDArray] = innerprod,
+    norm_op: Callable[[NDArray, float], NDArray] = norm,
     npmod=np
 ) -> NDArray | tuple[NDArray, int]:
     """Construct an orthonormal basis from an array of vectors through the Gram-Schmidt process.
@@ -125,29 +132,29 @@ def gram_schmidt(
         A full array of orthonormal vectors that span the space that is spanned by the given vectors
         and basis.
     """
-    start = 0
-    if basis is None:
-        if vectors.shape[0] == 0:
-            return vectors.copy()
-        basis = normalize_op(vectors[0], cutoff=cutoff)[0][None, :]
-        basis_size = None
-        start = 1
-
     if npmod is np:
+        start = 0
+        if basis is None:
+            if vectors.shape[0] == 0:
+                return vectors.copy()
+            basis = norm_op(vectors[0], cutoff=cutoff)[0][None, :]
+            basis_size = None
+            start = 1
+
         for vector in vectors[start:]:
-            basis, basis_size = _gram_schmidt_update(vector, basis, basis_size, cutoff, project_op,
-                                                     normalize_op, npmod)
+            basis, basis_size = _gram_schmidt_update(vector, basis, basis_size, cutoff,
+                                                     innerprod_op, norm_op)
     else:
         def update(val):
             ivec, _vectors, _basis, _basis_size = val
-            _basis, _basis_size = _gram_schmidt_update(_vectors[ivec], _basis, _basis_size, cutoff,
-                                                       project_op, normalize_op, npmod)
+            _basis, _basis_size = _gram_schmidt_update(_vectors[ivec], basis, basis_size, cutoff,
+                                                       innerprod_op, norm_op, npmod=npmod)
             return ivec + 1, _vectors, _basis, _basis_size
 
         basis, basis_size = jax.lax.while_loop(
             lambda val: (val[0] < val[1].shape[0]) & (val[3] < val[2].shape[0]),
             update,
-            (start, vectors, basis, basis_size)
+            (0, vectors, basis, basis_size)
         )[2:]
 
     if basis_size is None:

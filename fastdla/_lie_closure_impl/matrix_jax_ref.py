@@ -9,7 +9,7 @@ import numpy as np
 import jax
 from jax import Array
 import jax.numpy as jnp
-from fastdla.linalg.matrix_ops_jax import commutator, innerprod, normalize, orthogonalize
+from fastdla.linalg.matrix_ops_jax import commutator, innerprod, norm
 from fastdla._lie_closure_impl.algorithms import Algorithms
 
 LOG = logging.getLogger(__name__)
@@ -17,10 +17,26 @@ BASIS_ALLOC_UNIT = 1024
 
 
 @jax.jit
+def normalize(op: Array, cutoff: float = 1.e-8) -> tuple[Array, float]:
+    """Normalize a matrix."""
+    op_norm = norm(op)[..., None]
+    is_null = jnp.isclose(op_norm, 0., atol=cutoff)
+    return jnp.where(is_null, 0., op) / jnp.where(is_null, 1., op_norm)
+
+
+@jax.jit
+def orthogonalize(op: Array, basis: Array) -> Array:
+    # What we want is for the second term is
+    #   jnp.tensordot(innerprod(basis, op), basis, [[0], [0]])
+    # but we instead compute the conjugate of the innerprod to reduce the number of computation
+    return op - jnp.tensordot(innerprod(op, basis).conjugate(), basis, [[0], [0]])
+
+
+@jax.jit
 def _has_orthcomp(op: Array, basis: Array) -> tuple[bool, Array]:
     orth = orthogonalize(normalize(orthogonalize(op, basis)), basis)
-    norm = jnp.sqrt(innerprod(orth, orth))
-    return jnp.isclose(norm, 1., rtol=1.e-5), orth / norm
+    onorm = norm(orth)
+    return jnp.isclose(onorm, 1., rtol=1.e-5), orth / onorm
 
 
 @partial(jax.jit, static_argnums=[0])
