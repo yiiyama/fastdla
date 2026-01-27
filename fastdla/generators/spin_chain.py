@@ -7,7 +7,7 @@ except ImportError:
     jnp = None
 else:
     import jax
-from ..linalg.eigenspace import LinearOpFunction, get_eigenspace
+from fastdla.algorithms.eigenspace import LinearOpFunction, get_eigenspace
 
 
 def magnetization_projection(

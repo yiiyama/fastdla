@@ -6,7 +6,7 @@ import jax
 import jax.numpy as jnp
 from fastdla.sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
 from fastdla.generators.spin_chain import translation_eigenspace, parity_eigenspace
-from fastdla.linalg.eigenspace import get_eigenspace
+from fastdla.algorithms.eigenspace import get_eigenspace
 
 
 def z2lgt_physical_hva_generators(

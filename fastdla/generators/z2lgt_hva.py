@@ -5,10 +5,10 @@ from functools import partial
 import numpy as np
 import jax
 import jax.numpy as jnp
-from ..pauli import PAULIS
-from ..sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
-from .spin_chain import translation, translation_eigenspace
-from ..linalg.eigenspace import LinearOpFunction, get_eigenspace
+from fastdla.pauli import PAULIS
+from fastdla.sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
+from fastdla.algorithms.eigenspace import LinearOpFunction, get_eigenspace
+from fastdla.generators.spin_chain import translation, translation_eigenspace
 
 
 def z2lgt_hva_generators(num_fermions: int, gauge_op: str = 'X') -> SparsePauliSumArray:

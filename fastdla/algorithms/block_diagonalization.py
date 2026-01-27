@@ -7,7 +7,7 @@ try:
 except ImportError:
     jnp = None
     jrandom = None
-from fastdla.linalg.gram_schmidt import gram_schmidt
+from fastdla.algorithms.gram_schmidt import gram_schmidt
 
 LOG = logging.getLogger(__name__)
 
