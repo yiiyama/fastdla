@@ -69,10 +69,11 @@ def commutator(
 @partial(jax.jit, static_argnames=['skew'])
 def to_matrix_stack(elems: NDArray[np.float64], skew: bool = False) -> Array:
     extra_dims = elems.shape[:-2]
+    sharding = jax.typeof(elems).sharding
     dim = elems.shape[-1]
     diag = elems[..., 0, :]
-    upper = elems[..., 1:, :].reshape(extra_dims + (2, -1))
-    matrix = jnp.zeros(extra_dims + (2, dim, dim), dtype=np.float64)
+    upper = elems[..., 1:, :].reshape(extra_dims + (2, -1), out_sharding=sharding)
+    matrix = jnp.zeros(extra_dims + (2, dim, dim), dtype=np.float64, device=sharding)
 
     if skew:
         lower_sign = np.array([-1., 1.])[:, None]
@@ -93,8 +94,9 @@ def to_matrix_stack(elems: NDArray[np.float64], skew: bool = False) -> Array:
 @partial(jax.jit, static_argnames=['skew'])
 def from_matrix_stack(matrix: NDArray[np.float64], skew: bool = False) -> Array:
     extra_dims = matrix.shape[:-3]
+    sharding = jax.typeof(matrix).sharding
     dim = matrix.shape[-1]
-    elements = jnp.zeros(extra_dims + (dim * dim,), dtype=np.float64)
+    elements = jnp.zeros(extra_dims + (dim * dim,), dtype=np.float64, device=sharding)
 
     diagonals = jnp.diagonal(matrix, axis1=-2, axis2=-1)
     if skew:
