@@ -5,7 +5,6 @@ import logging
 from typing import Any, Optional
 import numpy as np
 from fastdla.sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
-from fastdla._lie_closure_impl.algorithms import Algorithms
 
 LOG = logging.getLogger(__name__)
 AlgebraElement = Any
@@ -14,9 +13,6 @@ Basis = Sequence[AlgebraElement]
 
 def lie_basis(
     ops: Basis,
-    *,
-    algorithm: Algorithms = Algorithms.GS_DIRECT,
-    return_aux: bool = False,
     **kwargs
 ) -> Basis | tuple[Basis, list]:
     r"""Compute a basis of the linear space spanned by ops.
@@ -34,12 +30,7 @@ def lie_basis(
         ops = SparsePauliSumArray(ops)
 
     if isinstance(ops, SparsePauliSumArray):
-        kwargs['algorithm'] = algorithm
-        kwargs['return_aux'] = return_aux
         from fastdla._lie_closure_impl.sparse_numba import lie_basis as fn
-    elif kwargs.get('skew_hermitian', False):
-        kwargs.pop('skew_hermitian')
-        from fastdla._lie_closure_impl.un_jax import lie_basis as fn
     else:
         from fastdla._lie_closure_impl.matrix_jax import lie_basis as fn
 
@@ -50,8 +41,7 @@ def lie_closure(
     generators: Any,
     *,
     max_dim: Optional[int] = None,
-    algorithm: Algorithms = Algorithms.GS_DIRECT,
-    return_aux: bool = False,
+    print_every: Optional[int] = None,
     **kwargs
 ) -> tuple[Basis, Basis] | Basis:
     """Compute the Lie closure of given generators.
@@ -93,8 +83,7 @@ def lie_closure(
         generators: Lie algebra elements to compute the closure from.
         max_dim: Cutoff for the dimension of the Lie closure. If set, the algorithm may be halted
             before a full closure is obtained.
-        algorithm: Algorithm to use for linear independence check and basis update.
-        return_aux: Whether to return the auxiliary objects together with the main output.
+        print_every: Verbosity setting.
 
     Returns:
         A basis of the Lie algebra spanned by the nested commutators of the generators. If
@@ -104,22 +93,13 @@ def lie_closure(
         generators = SparsePauliSumArray(generators)
 
     if isinstance(generators, SparsePauliSumArray):
-        kwargs['algorithm'] = algorithm
-        kwargs['return_aux'] = return_aux
         from fastdla._lie_closure_impl.sparse_numba import lie_closure as fn
     elif isinstance(generators, np.ndarray):
-        kwargs['algorithm'] = algorithm
-        kwargs['return_aux'] = return_aux
         from fastdla._lie_closure_impl.matrix_numba import lie_closure as fn
     elif kwargs.get('ref_impl', False):
         kwargs.pop('ref_impl')
-        kwargs['algorithm'] = algorithm
-        kwargs['return_aux'] = return_aux
         from fastdla._lie_closure_impl.matrix_jax_ref import lie_closure as fn
-    elif kwargs.get('skew_hermitian', False):
-        kwargs.pop('skew_hermitian')
-        from fastdla._lie_closure_impl.un_jax import lie_closure as fn
     else:
         from fastdla._lie_closure_impl.matrix_jax import lie_closure as fn
 
-    return fn(generators, max_dim=max_dim, **kwargs)
+    return fn(generators, max_dim=max_dim, print_every=print_every, **kwargs)

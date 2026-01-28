@@ -9,22 +9,112 @@ import numpy as np
 import jax
 from jax import Array
 import jax.numpy as jnp
-from fastdla.linalg.matrix_ops_jax import innerprod, norm, commutator
+from fastdla.linalg.matrix_ops_jax import (
+    innerprod as minnerprod,
+    norm as mnorm,
+    commutator
+)
+from fastdla.linalg.hermitian_ops_jax import (
+    innerprod as hinnerprod,
+    norm as hnorm,
+    to_matrix,
+    from_matrix,
+    upper_indices
+)
 from fastdla.algorithms.gram_schmidt import gram_schmidt
 
 LOG = logging.getLogger(__name__)
 BASIS_ALLOC_UNIT = 1024
 
-_gs_update = jax.jit(
-    partial(gram_schmidt, innerprod_op=innerprod, norm_op=norm, npmod=jnp)
+_gs_update_generic = jax.jit(
+    partial(gram_schmidt, innerprod_op=minnerprod, norm_op=mnorm, npmod=jnp)
 )
-_vcommutator = jax.jit(jax.vmap(commutator, in_axes=[0, None]))
+_gs_update_skew = jax.jit(
+    partial(gram_schmidt, innerprod_op=hinnerprod, norm_op=hnorm, npmod=jnp)
+)
+_vcommutator_generic = jax.jit(jax.vmap(commutator, in_axes=[0, None]))
 
 
-def get_loop_body(
-    print_every: Optional[int] = None,
-    gs_update=_gs_update,
-    vcommutator=_vcommutator
+@jax.jit
+def _vcommutator_skew(lhs: Array, elems: Array) -> Array:
+    dim = lhs.shape[-1]
+    rhs = to_matrix(elems, skew=True)
+    prod = lhs @ rhs
+    result = jnp.zeros(lhs.shape[:1] + elems.shape, dtype=elems.dtype)
+    result = result.at[:, :dim].set(2. * jnp.diagonal(prod, axis1=1, axis2=2).imag)
+    rows, cols = upper_indices(dim)
+    upper = prod[:, rows, cols]
+    lowert = prod[:, cols, rows]
+    low = dim
+    high = low + len(rows)
+    result = result.at[:, low:high].set(upper.real - lowert.real)
+    low = high
+    high = low + len(rows)
+    result = result.at[:, low:high].set(upper.imag + lowert.imag)
+    return result
+
+
+def _lie_basis(
+    ops: Sequence[Array],
+    gs_update: Callable
+) -> np.ndarray:
+    """Identify a basis for the linear space spanned by ops.
+
+    Args:
+        ops: Lie algebra elements whose span to calculate the basis for.
+
+    Returns:
+        A list of linearly independent ops.
+    """
+    ops = jnp.asarray(ops)
+    if ops.shape[0] == 0:
+        raise ValueError('Cannot determine the basis of null space')
+
+    # Initialize a list of normalized generators
+    basis = jnp.zeros_like(ops)
+    basis, basis_size = gs_update(ops, basis=basis, basis_size=0)
+    return basis[:basis_size]
+
+
+def lie_basis(
+    ops: Sequence[Array],
+    *,
+    skew_hermitian: bool = False
+) -> np.ndarray:
+    if skew_hermitian:
+        ops = from_matrix(ops, skew=True)
+        gs_update = _gs_update_skew
+    else:
+        gs_update = _gs_update_generic
+
+    basis = _lie_basis(ops, gs_update)
+
+    if skew_hermitian:
+        basis = to_matrix(basis, skew=True)
+    return np.array(basis)
+
+
+def _init_basis(
+    generators: Sequence[Array],
+    gs_update: Callable
+):
+    generators = jnp.asarray(generators)
+    if (num_gen := generators.shape[0]) == 0:
+        raise ValueError('Empty set of generators')
+
+    # Initialize the basis
+    max_size = ((num_gen - 1) // BASIS_ALLOC_UNIT + 1) * BASIS_ALLOC_UNIT
+    basis = jnp.zeros((max_size,) + generators.shape[1:], dtype=generators.dtype)
+    basis, basis_size = gs_update(generators, basis=basis, basis_size=0)
+    generators = basis[:basis_size]
+    LOG.info('Number of independent generators: %d', basis_size)
+    return generators, basis
+
+
+def _get_loop_body(
+    print_every: int | None,
+    gs_update: Callable,
+    vcommutator: Callable
 ):
     """Make the compiled loop body function using the given algorithm."""
     log_level = LOG.getEffectiveLevel()
@@ -60,63 +150,12 @@ def get_loop_body(
     return loop_body
 
 
-def _lie_basis(
-    ops: Sequence[Array],
-    gs_update: Callable
-) -> np.ndarray:
-    """Identify a basis for the linear space spanned by ops.
-
-    Args:
-        ops: Lie algebra elements whose span to calculate the basis for.
-
-    Returns:
-        A list of linearly independent ops.
-    """
-    ops = jnp.asarray(ops)
-    if ops.shape[0] == 0:
-        raise ValueError('Cannot determine the basis of null space')
-
-    # Initialize a list of normalized generators
-    basis = jnp.zeros_like(ops)
-    basis, basis_size = gs_update(ops, basis=basis, basis_size=0)
-    return basis[:basis_size]
-
-
-def lie_basis(
-    ops: Sequence[Array]
-) -> np.ndarray:
-    basis = _lie_basis(ops, _gs_update)
-    return np.array(basis)
-
-
-def _init_basis(
-    generators: Sequence[Array],
-    gs_update: Callable
-):
-    generators = jnp.asarray(generators)
-    if (num_gen := generators.shape[0]) == 0:
-        raise ValueError('Empty set of generators')
-
-    # Initialize the basis
-    max_size = ((num_gen - 1) // BASIS_ALLOC_UNIT + 1) * BASIS_ALLOC_UNIT
-    basis = jnp.zeros((max_size,) + generators.shape[1:], dtype=generators.dtype)
-    basis, basis_size = gs_update(generators, basis=basis, basis_size=0)
-    generators = basis[:basis_size]
-    LOG.info('Number of independent generators: %d', basis_size)
-    return generators, basis
-
-
 def _compute_closure(
     generators: Array,
     basis: Array,
-    gs_update: Callable,
-    vcommutator: Callable,
     max_dim: int,
-    print_every: int | None
+    loop_body: Callable
 ):
-    # Get the main loop function for the algorithm
-    loop_body = get_loop_body(print_every=print_every, gs_update=gs_update, vcommutator=vcommutator)
-
     # Main loop: generate nested commutators
     idx_op = 0
     basis_size = generators.shape[0]
@@ -153,7 +192,8 @@ def lie_closure(
     generators: Sequence[Array],
     *,
     max_dim: Optional[int] = None,
-    print_every: Optional[int] = None
+    print_every: Optional[int] = None,
+    skew_hermitian: bool = False
 ) -> Array:
     """Compute the Lie closure of given generators.
 
@@ -165,8 +205,22 @@ def lie_closure(
     Returns:
         A basis of the Lie algebra spanned by the nested commutators of the generators.
     """
-    generators, basis = _init_basis(generators, _gs_update)
+    if skew_hermitian:
+        generators = from_matrix(generators, skew=True)
+        gs_update = _gs_update_skew
+        vcommutator = _vcommutator_skew
+    else:
+        gs_update = _gs_update_generic
+        vcommutator = _vcommutator_generic
+
+    generators, basis = _init_basis(generators, gs_update)
+    if skew_hermitian:
+        generators = to_matrix(generators, skew=True)
+
     if generators.shape[0] <= 1:
         return generators
 
-    return _compute_closure(generators, basis, _gs_update, _vcommutator, max_dim, print_every)
+    # Make the main loop function
+    loop_body = _get_loop_body(print_every, gs_update, vcommutator)
+    # Run the loop
+    return _compute_closure(generators, basis, max_dim, loop_body)
