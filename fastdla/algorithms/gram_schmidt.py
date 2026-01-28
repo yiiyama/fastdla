@@ -40,15 +40,17 @@ def orthonormalize(
         the norm of the orthogonal component.
     """
     def _orthonormalize(_vector):
-        # What we want is
-        #   jnp.tensordot(innerprod(basis, op), basis, [[0], [0]])
-        # but we instead compute the conjugate of the innerprod to reduce the number of computation
-        if npmod is jnp and isinstance((sharding := jax.typeof(basis).sharding), NamedSharding):
+        if npmod is jnp and (sharding := jax.typeof(basis).sharding).num_devices != 0:
             sharding = NamedSharding(sharding.mesh, PartitionSpec(*((None,) * _vector.ndim)))
             tensordot = partial(jnp.tensordot, out_sharding=sharding)
+            axes = [[0, 1], [0, 1]]
         else:
             tensordot = npmod.tensordot
-        projection = tensordot(innerprod_op(_vector, basis).conjugate(), basis, [[0], [0]])
+            axes = [[0], [0]]
+        # What we want is
+        #   tensordot(innerprod(basis, op), basis, [[0], [0]])
+        # but we instead compute the conjugate of the innerprod to reduce the number of computation
+        projection = tensordot(innerprod_op(_vector, basis).conjugate(), basis, axes)
         orth = _vector - projection
         onorm = npmod.sqrt(innerprod_op(orth, orth))[..., None]
         is_null = jnp.isclose(onorm, 0., atol=cutoff)
@@ -103,10 +105,20 @@ def _gram_schmidt_update(
                 basis_size += 1
     else:
         sharding = jax.typeof(basis).sharding
+        if (num_dev := sharding.num_devices) != 0:
+            def update(_vec, _basis, _pos):
+                iround = _pos // num_dev
+                idev = _pos % num_dev
+                return _basis.at[idev, iround].set(_vec, out_sharding=sharding), _pos + 1
+
+        else:
+            def update(_vec, _basis, _pos):
+                return _basis.at[_pos].set(_vec), _pos + 1
+
         basis, basis_size = jax.lax.cond(
             has_orth,
-            lambda v, b, s: (b.at[s].set(v, out_sharding=sharding), s + 1),
-            lambda v, b, s: (b, s),
+            update,
+            lambda v, b, p: (b, p),
             orth, basis, basis_size
         )
 
@@ -115,8 +127,9 @@ def _gram_schmidt_update(
 
 def gram_schmidt(
     vectors: NDArray,
-    basis: Optional[np.ndarray] = None,
+    basis: Optional[NDArray] = None,
     basis_size: Optional[int] = None,
+    on_saturation: str = 'raise',
     cutoff: float = 1.e-08,
     innerprod_op: Callable[[NDArray, NDArray], NDArray] = innerprod,
     npmod=np
@@ -149,6 +162,12 @@ def gram_schmidt(
         for vector in vectors[start:]:
             basis, basis_size = _gram_schmidt_update(vector, basis, basis_size, cutoff,
                                                      innerprod_op)
+            if basis_size == basis.shape[0]:
+                if on_saturation == 'raise':
+                    raise RuntimeError('Basis array saturated')
+                if on_saturation == 'warn':
+                    pass  # user warning
+                break
     else:
         def update(val):
             ivec, _vectors, _basis, _basis_size = val
@@ -156,8 +175,9 @@ def gram_schmidt(
                                                        innerprod_op, npmod=npmod)
             return ivec + 1, _vectors, _basis, _basis_size
 
+        max_size = np.prod(basis.shape[:-2])
         basis, basis_size = jax.lax.while_loop(
-            lambda val: (val[0] < val[1].shape[0]) & (val[3] < val[2].shape[0]),
+            lambda val: (val[0] < val[1].shape[0]) & (val[3] < max_size),
             update,
             (0, vectors, basis, basis_size)
         )[2:]

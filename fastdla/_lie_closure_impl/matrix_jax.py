@@ -9,6 +9,7 @@ import numpy as np
 import jax
 from jax import Array
 import jax.numpy as jnp
+from jax.sharding import AxisType, NamedSharding, PartitionSpec
 from fastdla.linalg.matrix_ops_jax import (
     innerprod as minnerprod,
     commutator as mcommutator
@@ -23,7 +24,6 @@ from fastdla.linalg.hermitian_ops_jax import (
 from fastdla.algorithms.gram_schmidt import gram_schmidt
 
 LOG = logging.getLogger(__name__)
-BASIS_ALLOC_UNIT = 1024
 
 _gs_update_generic = jax.jit(
     partial(gram_schmidt, innerprod_op=minnerprod, npmod=jnp)
@@ -77,16 +77,38 @@ def lie_basis(
 
 def _init_basis(
     generators: Array,
-    gs_update: Callable
+    gs_update: Callable,
+    alloc_unit: int,
+    shard: bool
 ):
     if (num_gen := generators.shape[0]) == 0:
         raise ValueError('Empty set of generators')
 
-    # Initialize the basis
-    max_size = ((num_gen - 1) // BASIS_ALLOC_UNIT + 1) * BASIS_ALLOC_UNIT
-    basis = jnp.zeros((max_size,) + generators.shape[1:], dtype=generators.dtype)
+    max_size = ((num_gen - 1) // alloc_unit + 1) * alloc_unit
+
+    if shard:
+        if alloc_unit % jax.device_count() != 0:
+            raise ValueError('Basis allocation unit size is not a multiple of device_count')
+        mesh = jax.make_mesh((jax.device_count(),), ('x',), axis_types=(AxisType.Explicit,))
+        sharding = NamedSharding(mesh, PartitionSpec('x', None, None, None))
+        num_dev = sharding.num_devices
+        shard_size = max_size // num_dev
+        basis_shape = (num_dev, shard_size) + generators.shape[1:]
+    else:
+        sharding = jax.devices()[0]
+        basis_shape = (max_size,) + generators.shape[1:]
+
+    basis = jnp.zeros(basis_shape, dtype=generators.dtype, device=sharding)
     basis, basis_size = gs_update(generators, basis=basis, basis_size=0)
-    generators = basis[:basis_size]
+
+    if shard:
+        # Sharded basis is filled evenly on devices
+        # pylint: disable-next=unbalanced-tuple-unpacking
+        iround, idev = np.unravel_index(np.arange(basis_size), (shard_size, num_dev))
+        duplication = NamedSharding(mesh, PartitionSpec(None, None, None))
+        generators = basis.at[idev, iround].get(out_sharding=duplication)
+    else:
+        generators = basis[:basis_size]
     LOG.info('Number of independent generators: %d', basis_size)
     return generators, basis
 
@@ -121,11 +143,46 @@ def _get_loop_body(
                 lambda: None
             )
 
-        comms = commutator(generators, basis[idx_op])
-        basis, basis_size = gs_update(comms, basis=basis, basis_size=basis_size)
-        # If comms overshot the size of the basis, extend the basis and repeat from the same op
-        new_idx = jax.lax.select(jnp.equal(basis_size, basis.shape[0]), idx_op, idx_op + 1)
-        return new_idx, generators, basis, basis_size
+        sharding = jax.typeof(basis).sharding
+        if (num_dev := sharding.num_devices) != 0:
+            iround = idx_op // num_dev
+            comms = commutator(generators[None, ...], basis[:, iround][:, None])
+            comms = comms.reshape((-1,) + basis.shape[2:])
+            duplication = NamedSharding(sharding.mesh, PartitionSpec(None, None, None))
+            comms = jax.device_put(comms, duplication)
+            incr = num_dev
+        else:
+            comms = commutator(generators, basis[idx_op])
+            incr = 1
+
+        basis, new_size = gs_update(comms, basis=basis, basis_size=basis_size)
+        # Handle overshoots:
+        # Sharded basis
+        # Case A: basis array size == new_size
+        #   -> Resize the basis array and resume the loop from idx_op
+        # Case B: (idx_op + num_dev > old_size > idx_op) and (new_size > old_size)
+        #   -> Stay at idx_op
+        # Case C: (idx_op + num_dev > old_size > idx_op) and (new_size == old_size)
+        #   -> Normal termination
+        # Unsharded basis
+        # Case A: basis array size == new_size
+        #   -> Resize the basis array and resume the loop from idx_op
+        max_size = np.prod(basis.shape[:-2])
+        idx_op_incr = idx_op + incr
+        new_idx = jax.lax.select(
+            jnp.equal(new_size, max_size),
+            idx_op,
+            jax.lax.select(
+                jnp.greater(idx_op_incr, basis_size) & jnp.greater(basis_size, idx_op),
+                jax.lax.select(
+                    jnp.not_equal(new_size, basis_size),
+                    idx_op,
+                    idx_op_incr
+                ),
+                idx_op_incr
+            )
+        )
+        return new_idx, generators, basis, new_size
 
     return loop_body
 
@@ -134,8 +191,10 @@ def _compute_closure(
     generators: Array,
     basis: Array,
     max_dim: int,
-    loop_body: Callable
+    loop_body: Callable,
+    basis_alloc_unit: int
 ):
+    num_dev = jax.typeof(basis).sharding.num_devices
     # Main loop: generate nested commutators
     idx_op = 0
     basis_size = generators.shape[0]
@@ -143,11 +202,12 @@ def _compute_closure(
         main_loop_start = time.time()
         # Main (inner) loop: iteratively compute the next commutator and update the basis based on
         # the current one
+        max_size = np.prod(basis.shape[:-2])
         idx_op, generators, basis, new_size = jax.lax.while_loop(
             lambda val: jnp.logical_not(
-                (val[0] == val[3])  # idx_op == new_size -> commutator exhausted
+                (val[0] >= val[3])  # idx_op >= new_size -> commutator exhausted
                 | (val[3] == max_dim)  # new_size == max_dim -> reached max dim
-                | (val[3] == val[2].shape[0])  # new_size == array size -> need reallocation
+                | (val[3] == max_size)  # new_size == array size -> need reallocation
             ),
             loop_body,
             (idx_op, generators, basis, basis_size)
@@ -157,13 +217,24 @@ def _compute_closure(
                  new_size - basis_size, time.time() - main_loop_start, new_size)
 
         basis_size = new_size
-        if idx_op == basis_size or basis_size == max_dim:
+        if idx_op >= basis_size or basis_size == max_dim:
             # Computed all commutators
             break
 
         # Need to resize basis and xmat
-        LOG.debug('Resizing basis array to %d', basis.shape[0] + BASIS_ALLOC_UNIT)
-        basis = jnp.pad(basis, ((0, BASIS_ALLOC_UNIT), (0, 0), (0, 0)))
+        LOG.debug('Resizing basis array to %d', max_size + basis_alloc_unit)
+        if num_dev != 0:
+            local_unit = basis_alloc_unit // num_dev
+            basis = jnp.pad(basis, ((0, 0), (0, local_unit), (0, 0), (0, 0)))
+        else:
+            basis = jnp.pad(basis, ((0, basis_alloc_unit), (0, 0), (0, 0)))
+
+    if num_dev != 0:
+        # basis[:basis_size] may not fit in one device -> return the sharded array as is along
+        # with the indices
+        # pylint: disable-next=unbalanced-tuple-unpacking
+        indices = np.unravel_index(np.arange(basis_size), basis.shape[:2][::-1])
+        return basis, indices[::-1]
 
     return basis[:basis_size]
 
@@ -174,7 +245,9 @@ def lie_closure(
     max_dim: Optional[int] = None,
     print_every: Optional[int] = None,
     skew_hermitian: bool = False,
-    cutoff: float = 1.e-08
+    cutoff: float = 1.e-08,
+    basis_alloc_unit: int = 1024,
+    shard_basis: bool = False
 ) -> Array:
     """Compute the Lie closure of given generators.
 
@@ -196,7 +269,7 @@ def lie_closure(
         commutator = mcommutator
     gs_update = partial(gs_update, cutoff=cutoff)
 
-    generators, basis = _init_basis(generators, gs_update)
+    generators, basis = _init_basis(generators, gs_update, basis_alloc_unit, shard_basis)
     if skew_hermitian:
         generators = to_matrix_stack(generators, skew=True)
 
@@ -206,4 +279,4 @@ def lie_closure(
     # Make the main loop function
     loop_body = _get_loop_body(print_every, gs_update, commutator)
     # Run the loop
-    return _compute_closure(generators, basis, max_dim, loop_body)
+    return _compute_closure(generators, basis, max_dim, loop_body, basis_alloc_unit)
