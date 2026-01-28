@@ -1,12 +1,14 @@
 """Vector orthogonalization and the Gram-Schmidt process."""
 import logging
 from collections.abc import Callable
+from functools import partial
 from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
 try:
     import jax
     import jax.numpy as jnp
+    from jax.sharding import NamedSharding, PartitionSpec
 except ImportError:
     jax = None
     jnp = None
@@ -41,7 +43,12 @@ def orthonormalize(
         # What we want is
         #   jnp.tensordot(innerprod(basis, op), basis, [[0], [0]])
         # but we instead compute the conjugate of the innerprod to reduce the number of computation
-        projection = npmod.tensordot(innerprod_op(_vector, basis).conjugate(), basis, [[0], [0]])
+        if npmod is jnp and isinstance((sharding := jax.typeof(basis).sharding), NamedSharding):
+            sharding = NamedSharding(sharding.mesh, PartitionSpec(*((None,) * _vector.ndim)))
+            tensordot = partial(jnp.tensordot, out_sharding=sharding)
+        else:
+            tensordot = npmod.tensordot
+        projection = tensordot(innerprod_op(_vector, basis).conjugate(), basis, [[0], [0]])
         orth = _vector - projection
         onorm = npmod.sqrt(innerprod_op(orth, orth))[..., None]
         is_null = jnp.isclose(onorm, 0., atol=cutoff)
@@ -95,10 +102,11 @@ def _gram_schmidt_update(
                 basis[basis_size] = orth
                 basis_size += 1
     else:
+        sharding = jax.typeof(basis).sharding
         basis, basis_size = jax.lax.cond(
             has_orth,
-            lambda _vec, _basis, _size: (_basis.at[_size].set(_vec), _size + 1),
-            lambda _, _basis, _size: (_basis, _size),
+            lambda v, b, s: (b.at[s].set(v, out_sharding=sharding), s + 1),
+            lambda v, b, s: (b, s),
             orth, basis, basis_size
         )
 
