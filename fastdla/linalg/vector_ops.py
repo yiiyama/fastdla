@@ -16,8 +16,4 @@ def innerprod(vec1: NDArray, vec2: NDArray, npmod=np) -> NDArray:
         The inner product. If the arguments have extra dimensions, the returned array will have a
         shape of an outer product of these dimensions.
     """
-    return npmod.tensordot(vec1.conjugate(), vec2, [[-1], [-1]])
-
-
-def norm(vector: NDArray, npmod=np) -> NDArray:
-    return npmod.sqrt(npmod.sum(npmod.square(npmod.abs(vector)), axis=-1))
+    return npmod.vecdot(vec1, vec2)

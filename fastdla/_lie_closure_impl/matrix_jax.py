@@ -11,15 +11,14 @@ from jax import Array
 import jax.numpy as jnp
 from fastdla.linalg.matrix_ops_jax import (
     innerprod as minnerprod,
-    norm as mnorm,
-    commutator
+    commutator as mcommutator
 )
 from fastdla.linalg.hermitian_ops_jax import (
     innerprod as hinnerprod,
-    norm as hnorm,
-    to_matrix,
-    from_matrix,
-    upper_indices
+    commutator as hcommutator,
+    to_matrix_stack,
+    to_complex_matrix,
+    from_complex_matrix
 )
 from fastdla.algorithms.gram_schmidt import gram_schmidt
 
@@ -27,35 +26,15 @@ LOG = logging.getLogger(__name__)
 BASIS_ALLOC_UNIT = 1024
 
 _gs_update_generic = jax.jit(
-    partial(gram_schmidt, innerprod_op=minnerprod, norm_op=mnorm, npmod=jnp)
+    partial(gram_schmidt, innerprod_op=minnerprod, npmod=jnp)
 )
 _gs_update_skew = jax.jit(
-    partial(gram_schmidt, innerprod_op=hinnerprod, norm_op=hnorm, npmod=jnp)
+    partial(gram_schmidt, innerprod_op=hinnerprod, npmod=jnp)
 )
-_vcommutator_generic = jax.jit(jax.vmap(commutator, in_axes=[0, None]))
-
-
-@jax.jit
-def _vcommutator_skew(lhs: Array, elems: Array) -> Array:
-    dim = lhs.shape[-1]
-    rhs = to_matrix(elems, skew=True)
-    prod = lhs @ rhs
-    result = jnp.zeros(lhs.shape[:1] + elems.shape, dtype=elems.dtype)
-    result = result.at[:, :dim].set(2. * jnp.diagonal(prod, axis1=1, axis2=2).imag)
-    rows, cols = upper_indices(dim)
-    upper = prod[:, rows, cols]
-    lowert = prod[:, cols, rows]
-    low = dim
-    high = low + len(rows)
-    result = result.at[:, low:high].set(upper.real - lowert.real)
-    low = high
-    high = low + len(rows)
-    result = result.at[:, low:high].set(upper.imag + lowert.imag)
-    return result
 
 
 def _lie_basis(
-    ops: Sequence[Array],
+    ops: Array,
     gs_update: Callable
 ) -> np.ndarray:
     """Identify a basis for the linear space spanned by ops.
@@ -79,26 +58,27 @@ def _lie_basis(
 def lie_basis(
     ops: Sequence[Array],
     *,
-    skew_hermitian: bool = False
+    skew_hermitian: bool = False,
+    cutoff: float = 1.e-08
 ) -> np.ndarray:
     if skew_hermitian:
-        ops = from_matrix(ops, skew=True)
+        ops = from_complex_matrix(ops, skew=True)
         gs_update = _gs_update_skew
     else:
         gs_update = _gs_update_generic
+    gs_update = partial(gs_update, cutoff=cutoff)
 
     basis = _lie_basis(ops, gs_update)
 
     if skew_hermitian:
-        basis = to_matrix(basis, skew=True)
+        basis = to_complex_matrix(basis, skew=True)
     return np.array(basis)
 
 
 def _init_basis(
-    generators: Sequence[Array],
+    generators: Array,
     gs_update: Callable
 ):
-    generators = jnp.asarray(generators)
     if (num_gen := generators.shape[0]) == 0:
         raise ValueError('Empty set of generators')
 
@@ -114,7 +94,7 @@ def _init_basis(
 def _get_loop_body(
     print_every: int | None,
     gs_update: Callable,
-    vcommutator: Callable
+    commutator: Callable
 ):
     """Make the compiled loop body function using the given algorithm."""
     log_level = LOG.getEffectiveLevel()
@@ -141,7 +121,7 @@ def _get_loop_body(
                 lambda: None
             )
 
-        comms = vcommutator(generators, basis[idx_op])
+        comms = commutator(generators, basis[idx_op])
         basis, basis_size = gs_update(comms, basis=basis, basis_size=basis_size)
         # If comms overshot the size of the basis, extend the basis and repeat from the same op
         new_idx = jax.lax.select(jnp.equal(basis_size, basis.shape[0]), idx_op, idx_op + 1)
@@ -193,7 +173,8 @@ def lie_closure(
     *,
     max_dim: Optional[int] = None,
     print_every: Optional[int] = None,
-    skew_hermitian: bool = False
+    skew_hermitian: bool = False,
+    cutoff: float = 1.e-08
 ) -> Array:
     """Compute the Lie closure of given generators.
 
@@ -206,21 +187,23 @@ def lie_closure(
         A basis of the Lie algebra spanned by the nested commutators of the generators.
     """
     if skew_hermitian:
-        generators = from_matrix(generators, skew=True)
+        generators = from_complex_matrix(generators, skew=True)
         gs_update = _gs_update_skew
-        vcommutator = _vcommutator_skew
+        commutator = partial(hcommutator, skew=True, is_matrix=(True, False))
     else:
+        generators = jnp.asarray(generators)
         gs_update = _gs_update_generic
-        vcommutator = _vcommutator_generic
+        commutator = mcommutator
+    gs_update = partial(gs_update, cutoff=cutoff)
 
     generators, basis = _init_basis(generators, gs_update)
     if skew_hermitian:
-        generators = to_matrix(generators, skew=True)
+        generators = to_matrix_stack(generators, skew=True)
 
     if generators.shape[0] <= 1:
         return generators
 
     # Make the main loop function
-    loop_body = _get_loop_body(print_every, gs_update, vcommutator)
+    loop_body = _get_loop_body(print_every, gs_update, commutator)
     # Run the loop
     return _compute_closure(generators, basis, max_dim, loop_body)

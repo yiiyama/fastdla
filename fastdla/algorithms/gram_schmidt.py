@@ -10,7 +10,7 @@ try:
 except ImportError:
     jax = None
     jnp = None
-from fastdla.linalg.vector_ops import innerprod, norm
+from fastdla.linalg.vector_ops import innerprod
 
 LOG = logging.getLogger(__name__)
 
@@ -20,7 +20,6 @@ def orthonormalize(
     basis: NDArray,
     cutoff: float = 1.e-08,
     innerprod_op: Callable[[NDArray, NDArray], NDArray] = innerprod,
-    norm_op: Callable[[NDArray], NDArray] = norm,
     npmod=np
 ) -> tuple[bool, NDArray, float]:
     """Normalize the orthogonal component of a vector with respect to a basis.
@@ -44,7 +43,7 @@ def orthonormalize(
         # but we instead compute the conjugate of the innerprod to reduce the number of computation
         projection = npmod.tensordot(innerprod_op(_vector, basis).conjugate(), basis, [[0], [0]])
         orth = _vector - projection
-        onorm = norm_op(orth)[..., None]
+        onorm = npmod.sqrt(innerprod_op(orth, orth))[..., None]
         is_null = jnp.isclose(onorm, 0., atol=cutoff)
         return (jnp.where(is_null, 0., orth) / jnp.where(is_null, 1., onorm),
                 jnp.where(is_null[..., 0], 0., onorm[..., 0]))
@@ -74,12 +73,11 @@ def _gram_schmidt_update(
     basis_size: int | None,
     cutoff: float,
     innerprod_op,
-    norm_op,
     npmod=np
 ) -> tuple[NDArray, int | None]:
     """Identify the orthogonal component and update the basis."""
     has_orth, orth, _ = orthonormalize(vector, basis, cutoff=cutoff, innerprod_op=innerprod_op,
-                                       norm_op=norm_op, npmod=npmod)
+                                       npmod=npmod)
 
     if npmod is np:
         if LOG.getEffectiveLevel() <= logging.DEBUG:
@@ -113,7 +111,6 @@ def gram_schmidt(
     basis_size: Optional[int] = None,
     cutoff: float = 1.e-08,
     innerprod_op: Callable[[NDArray, NDArray], NDArray] = innerprod,
-    norm_op: Callable[[NDArray, float], NDArray] = norm,
     npmod=np
 ) -> NDArray | tuple[NDArray, int]:
     """Construct an orthonormal basis from an array of vectors through the Gram-Schmidt process.
@@ -137,18 +134,18 @@ def gram_schmidt(
         if basis is None:
             if vectors.shape[0] == 0:
                 return vectors.copy()
-            basis = norm_op(vectors[0], cutoff=cutoff)[0][None, :]
+            basis = vectors[0:1] / np.sqrt(innerprod_op(vectors[0], vectors[0]))
             basis_size = None
             start = 1
 
         for vector in vectors[start:]:
             basis, basis_size = _gram_schmidt_update(vector, basis, basis_size, cutoff,
-                                                     innerprod_op, norm_op)
+                                                     innerprod_op)
     else:
         def update(val):
             ivec, _vectors, _basis, _basis_size = val
-            _basis, _basis_size = _gram_schmidt_update(_vectors[ivec], basis, basis_size, cutoff,
-                                                       innerprod_op, norm_op, npmod=npmod)
+            _basis, _basis_size = _gram_schmidt_update(_vectors[ivec], _basis, _basis_size, cutoff,
+                                                       innerprod_op, npmod=npmod)
             return ivec + 1, _vectors, _basis, _basis_size
 
         basis, basis_size = jax.lax.while_loop(
