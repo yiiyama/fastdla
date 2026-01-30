@@ -5,7 +5,11 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from fastdla.sparse_pauli_sum import SparsePauliSum, SparsePauliSumArray
-from fastdla.generators.spin_chain import translation_eigenspace, parity_eigenspace
+from fastdla.generators.spin_chain import (
+    translation_eigenspace,
+    parity_eigenspace,
+    spin_flip_eigenspace
+)
 from fastdla.algorithms.eigenspace import get_eigenspace
 
 
@@ -185,6 +189,7 @@ def z2lgt_physical_u1_projector(
 def z2lgt_physical_symmetry_eigenspace(
     gauss_eigvals: Sequence[int],
     u1_charge: Optional[int] = None,
+    z2_sign: Optional[int] = None,
     c_phase: Optional[int] = None,
     p_sign: Optional[int] = None,
     t2_momentum: Optional[int] = None,
@@ -196,6 +201,8 @@ def z2lgt_physical_symmetry_eigenspace(
         basis = z2lgt_physical_u1_eigenspace(gauss_eigvals, u1_charge, basis=basis, npmod=npmod)
     elif basis is None:
         basis = npmod.eye(2 ** len(gauss_eigvals), dtype=np.complex128)
+    if z2_sign is not None:
+        basis = z2lgt_physical_z2_eigenspace(gauss_eigvals, z2_sign, basis=basis, npmod=npmod)
     if c_phase is not None:
         basis = z2lgt_physical_c_eigenspace(gauss_eigvals, c_phase, basis=basis, npmod=npmod)
     if p_sign is not None:
@@ -241,7 +248,7 @@ def z2lgt_physical_u1_eigenspace(
             subspace = np.zeros((2 ** num_links, eigen_idx.shape[0]), dtype=np.complex128)
             subspace[eigen_idx, np.arange(eigen_idx.shape[0])] = 1.
         else:
-            subspace = jax.nn.one_hot(eigen_idx, 2 ** num_links).T
+            subspace = jax.nn.one_hot(eigen_idx, 2 ** num_links, dtype=np.complex128).T
     else:
         def op(_basis):
             return _basis * npmod.not_equal(charges, charge).astype(int)[:, None]
@@ -252,6 +259,15 @@ def z2lgt_physical_u1_eigenspace(
         subspace = get_eigenspace(op, basis, dim=2 ** num_links, npmod=npmod)
 
     return subspace
+
+
+def z2lgt_physical_z2_eigenspace(
+    gauss_eigvals: Sequence[int],
+    sign: int,
+    basis: Optional[np.ndarray] = None,
+    npmod=np
+) -> np.ndarray:
+    return spin_flip_eigenspace(sign, basis=basis, num_spins=len(gauss_eigvals), npmod=npmod)
 
 
 def z2lgt_physical_c_eigenspace(
@@ -271,8 +287,7 @@ def z2lgt_physical_c_eigenspace(
     Returns:
         A matrix whose columns form the orthonormal basis of the eigen-subspace.
     """
-    return translation_eigenspace(phase, basis=basis, num_spins=len(gauss_eigvals),
-                                  npmod=npmod)
+    return translation_eigenspace(phase, basis=basis, num_spins=len(gauss_eigvals), npmod=npmod)
 
 
 def z2lgt_physical_p_eigenspace(
