@@ -53,9 +53,9 @@ def orthonormalize(
         projection = tensordot(innerprod_op(_vector, basis).conjugate(), basis, axes)
         orth = _vector - projection
         onorm = npmod.sqrt(innerprod_op(orth, orth))[..., None]
-        is_null = jnp.isclose(onorm, 0., atol=cutoff)
-        return (jnp.where(is_null, 0., orth) / jnp.where(is_null, 1., onorm),
-                jnp.where(is_null[..., 0], 0., onorm[..., 0]))
+        is_null = npmod.isclose(onorm, 0., atol=cutoff)
+        return (npmod.where(is_null, 0., orth) / npmod.where(is_null, 1., onorm),
+                npmod.where(is_null[..., 0], 0., onorm[..., 0]))
 
     orth, vnorm = _orthonormalize(vector)
     if npmod is np:
