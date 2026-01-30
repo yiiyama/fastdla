@@ -85,21 +85,21 @@ def sbd_fast(
             randmat += npmod.sum(normal((apart.shape[0], 1, 1)) * apart, axis=0)
 
         LOG.debug('Diagonalizing the random matrix..')
-        seeds = npmod.linalg.eigh(randmat)[1].T
-        LOG.debug('Done. %d eigvecs', seeds.shape[0])
+        seedvecs = npmod.linalg.eigh(randmat)[1].T
+        LOG.debug('Done. %d eigvecs', seedvecs.shape[0])
 
-        transform = npmod.empty((dim, dim), dtype=matrices.dtype)
+        transform = npmod.zeros((dim, dim), dtype=matrices.dtype)
         basis_size = 0
         block_sizes = []
         while basis_size < dim:
             LOG.debug('Starting with transform matrix size: %d', basis_size)
-            seed = seeds[basis_size]
+            seedvec = seedvecs[basis_size]
 
             if npmod is np:
-                transform[basis_size] = seed
+                transform[basis_size] = seedvec
             elif npmod is jnp:
-                transform = transform.at[basis_size].set(seed)
-            transform, new_size = gram_schmidt(matrices_combined @ seed, basis=transform,
+                transform = transform.at[basis_size].set(seedvec)
+            transform, new_size = gram_schmidt(matrices_combined @ seedvec, basis=transform,
                                                basis_size=basis_size + 1, cutoff=orth_cutoff,
                                                npmod=npmod)
 
@@ -144,8 +144,8 @@ def sbd_fast(
             # Also, by performing GS here, the next seed is trivially given by seeds[num_identified]
             # Argument `basis`` must be given as a copy of transform because the returned array is
             # the same object as this input in the numpy implementation.
-            seeds = gram_schmidt(seeds, basis=transform.copy(), basis_size=basis_size,
-                                 cutoff=orth_cutoff)[0]
+            seedvecs = gram_schmidt(seedvecs, basis=transform.copy(), basis_size=basis_size,
+                                    cutoff=orth_cutoff)[0]
 
         if len(block_sizes) > finest_decomposition:
             LOG.debug('Found the finest block decomposition so far: block sizes %s', block_sizes)
