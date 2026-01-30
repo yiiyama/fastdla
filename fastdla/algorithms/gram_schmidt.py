@@ -9,7 +9,6 @@ from numpy.typing import NDArray
 import jax
 import jax.numpy as jnp
 from jax.sharding import NamedSharding, PartitionSpec
-from fastdla.linalg.vector_ops import innerprod
 
 LOG = logging.getLogger(__name__)
 
@@ -18,7 +17,7 @@ def orthonormalize(
     vector: NDArray,
     basis: NDArray,
     cutoff: float = 1.e-08,
-    innerprod_op: Callable[[NDArray, NDArray], NDArray] = innerprod,
+    innerprod: Optional[Callable[[NDArray, NDArray], NDArray]] = None,
     npmod=np
 ) -> tuple[bool, NDArray, float]:
     """Normalize the orthogonal component of a vector with respect to a basis.
@@ -36,6 +35,9 @@ def orthonormalize(
         A flag indicating the existence of an orthogonal component, the orthonormalized vector, and
         the norm of the orthogonal component.
     """
+    if innerprod is None:
+        innerprod = npmod.vecdot
+
     def _orthonormalize(_vector):
         if npmod is jnp and (sharding := jax.typeof(basis).sharding).num_devices != 0:
             sharding = NamedSharding(sharding.mesh, PartitionSpec(*((None,) * _vector.ndim)))
@@ -47,30 +49,30 @@ def orthonormalize(
         # What we want is
         #   tensordot(innerprod(basis, op), basis, [[0], [0]])
         # but we instead compute the conjugate of the innerprod to reduce the number of computation
-        projection = tensordot(innerprod_op(_vector, basis).conjugate(), basis, axes)
+        projection = tensordot(innerprod(_vector, basis).conjugate(), basis, axes)
         orth = _vector - projection
-        onorm = npmod.sqrt(innerprod_op(orth, orth))[..., None]
+        onorm = npmod.sqrt(innerprod(orth, orth))[..., None]
         is_null = npmod.isclose(onorm, 0., atol=cutoff)
         return (npmod.where(is_null, 0., orth) / npmod.where(is_null, 1., onorm),
                 npmod.where(is_null[..., 0], 0., onorm[..., 0]))
 
-    orth, vnorm = _orthonormalize(vector)
+    orth, onorm = _orthonormalize(vector)
     if npmod is np:
-        LOG.debug('Direct orthogonalization found an orth component with norm %.3e', vnorm)
-        if vnorm == 0.:
-            return False, np.zeros_like(orth), np.zeros_like(vnorm)
+        LOG.debug('Direct orthogonalization found an orth component with norm %.3e', onorm)
+        if onorm == 0.:
+            return False, np.zeros_like(orth), np.zeros_like(onorm)
 
         reorth, renorm = _orthonormalize(orth)
         LOG.debug('Re-orthogonalization found an orth component with norm %.3e', renorm)
     else:
         reorth, renorm = jax.lax.cond(
-            jnp.equal(vnorm, 0.),
+            jnp.equal(onorm, 0.),
             lambda _orth, _vnorm: (jnp.zeros_like(_orth), jnp.zeros_like(_vnorm)),
             lambda _orth, _: _orthonormalize(_orth),
-            orth, vnorm
+            orth, onorm
         )
 
-    return npmod.isclose(renorm, 1.), reorth, vnorm
+    return npmod.isclose(renorm, 1.), reorth, onorm
 
 
 def _gram_schmidt_np(
@@ -78,11 +80,14 @@ def _gram_schmidt_np(
     basis: NDArray,
     basis_size: int,
     cutoff: float,
-    innerprod_op,
+    innerprod: Optional[Callable] = None,
     on_overflow: str = 'raise'
 ) -> tuple[NDArray, int]:
+    if innerprod is None:
+        innerprod = np.vecdot
+
     for vector in vectors:
-        has_orth, orth, _ = orthonormalize(vector, basis, cutoff=cutoff, innerprod_op=innerprod_op)
+        has_orth, orth, _ = orthonormalize(vector, basis, cutoff=cutoff, innerprod=innerprod)
         if has_orth:
             LOG.debug('Found an orthogonal component. Updating basis to size %d', basis_size + 1)
             if basis_size == basis.shape[0]:
@@ -99,14 +104,18 @@ def _gram_schmidt_np(
     return basis, basis_size
 
 
-@partial(jax.jit, static_argnums=[4])
+@partial(jax.jit, static_argnames=['innerprod', 'monitor_onorms'])
 def _gram_schmidt_jnp(
     vectors: NDArray,
     basis: NDArray,
     basis_size: int,
     cutoff: float,
-    innerprod_op,
+    innerprod: Optional[Callable] = None,
+    monitor_onorms: bool = False
 ) -> tuple[NDArray, int]:
+    if innerprod is None:
+        innerprod = jnp.vecdot
+
     sharding = jax.typeof(basis).sharding
     if (num_dev := sharding.num_devices) != 0:
         def update(_vec, _basis, _pos):
@@ -119,24 +128,35 @@ def _gram_schmidt_jnp(
             return _basis.at[_pos].set(_vec), _pos + 1
 
     def loop_body(val):
-        ivec, _vectors, _basis, _basis_size = val
-        has_orth, orth, _ = orthonormalize(_vectors[ivec], _basis, cutoff=cutoff,
-                                           innerprod_op=innerprod_op, npmod=jnp)
+        ivec, _vectors, _basis, _basis_size = val[:4]
+        if monitor_onorms:
+            onorms = val[4]
+        has_orth, orth, onorm = orthonormalize(_vectors[ivec], _basis, cutoff=cutoff,
+                                               innerprod=innerprod, npmod=jnp)
         _basis, _basis_size = jax.lax.cond(
             has_orth,
             update,
             lambda v, b, p: (b, p),
             orth, _basis, _basis_size
         )
-        return ivec + 1, _vectors, _basis, _basis_size
+        val = (ivec + 1, _vectors, _basis, _basis_size)
+        if monitor_onorms:
+            val += (onorms.at[ivec].set(onorm),)
+        return val
 
     max_size = np.prod(basis.shape[:-2])
-    basis, basis_size = jax.lax.while_loop(
+    init = (0, vectors, basis, basis_size)
+    if monitor_onorms:
+        init += (jnp.empty(vectors.shape[0]),)
+
+    result = jax.lax.while_loop(
         lambda val: (val[0] < val[1].shape[0]) & (val[3] < max_size),
         loop_body,
-        (0, vectors, basis, basis_size)
-    )[2:]
-
+        init
+    )
+    basis, basis_size = result[2:]
+    if monitor_onorms:
+        return basis, basis_size, result[-1]
     return basis, basis_size
 
 
@@ -146,7 +166,7 @@ def gram_schmidt(
     basis_size: Optional[int] = None,
     cutoff: float = 1.e-08,
     on_overflow: str = 'raise',
-    innerprod_op: Callable[[NDArray, NDArray], NDArray] = innerprod,
+    innerprod: Optional[Callable[[NDArray, NDArray], NDArray]] = None,
     npmod=np
 ) -> NDArray | tuple[NDArray, int]:
     """Construct an orthonormal basis from an array of vectors through the Gram-Schmidt process.
@@ -170,6 +190,7 @@ def gram_schmidt(
         basis_size = 0
 
     if npmod is np:
-        return _gram_schmidt_np(vectors, basis, basis_size, cutoff, innerprod_op, on_overflow)
+        return _gram_schmidt_np(vectors, basis, basis_size, cutoff, innerprod=innerprod,
+                                on_overflow=on_overflow)
     if npmod is jnp:
-        return _gram_schmidt_jnp(vectors, basis, basis_size, cutoff, innerprod_op)
+        return _gram_schmidt_jnp(vectors, basis, basis_size, cutoff, innerprod=innerprod)
