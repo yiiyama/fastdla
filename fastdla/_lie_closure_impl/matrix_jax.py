@@ -111,8 +111,9 @@ def _get_loop_body(
     print_every: int | None,
     commutator: Callable,
     innerprod: Callable,
-    comm_cutoff,
-    orthonorm_cutoff
+    comm_cutoff: float,
+    orthonorm_cutoff: float,
+    monitor_norms: bool = False
 ):
     """Make the compiled loop body function using the given algorithm."""
     log_level = LOG.getEffectiveLevel()
@@ -130,7 +131,9 @@ def _get_loop_body(
     @jax.jit
     def loop_body(val: tuple) -> tuple:
         """Compute the commutator and update the basis with orthogonal components."""
-        idx_op, generators, basis, basis_size = val
+        idx_op, generators, basis, basis_size = val[:4]
+        if monitor_norms:
+            cnorms, onorms, oflags = val[4:]
 
         if print_every > 0:
             jax.lax.cond(
@@ -153,8 +156,20 @@ def _get_loop_body(
 
         comm_norms = jnp.sqrt(innerprod(comms, comms))[..., None, None]
         comms = jnp.where(comm_norms < comm_cutoff, jnp.zeros_like(comms), comms)
+        # pylint: disable-next=unbalanced-tuple-unpacking
+        orthonorm_result = _gram_schmidt_jnp(comms, basis, basis_size, orthonorm_cutoff, innerprod,
+                                             monitor_onorms=monitor_norms)
+        basis, new_size = orthonorm_result[:2]
+        if monitor_norms:
+            ngen = generators.shape[0]
+            comm_onorms, comm_oflags = orthonorm_result[2:]
+            cnorms = jax.lax.dynamic_update_slice(cnorms, comm_norms.reshape((-1, ngen)),
+                                                  (idx_op, 0))
+            onorms = jax.lax.dynamic_update_slice(onorms, comm_onorms.reshape((-1, ngen)),
+                                                  (idx_op, 0))
+            oflags = jax.lax.dynamic_update_slice(oflags, comm_oflags.reshape((-1, ngen)),
+                                                  (idx_op, 0))
 
-        basis, new_size = _gram_schmidt_jnp(comms, basis, basis_size, orthonorm_cutoff, innerprod)
         # Handle overshoots:
         # Sharded basis
         # Case A: basis array size == new_size
@@ -181,7 +196,10 @@ def _get_loop_body(
                 idx_op_incr
             )
         )
-        return new_idx, generators, basis, new_size
+        val = (new_idx, generators, basis, new_size)
+        if monitor_norms:
+            val += (cnorms, onorms, oflags)
+        return val
 
     return loop_body
 
@@ -191,9 +209,22 @@ def _compute_closure(
     basis: Array,
     max_dim: int,
     loop_body: Callable,
-    basis_alloc_unit: int
+    basis_alloc_unit: int,
+    monitor_norms: bool = False
 ):
-    num_dev = jax.typeof(basis).sharding.num_devices
+    sharding = jax.typeof(basis).sharding
+    num_dev = sharding.num_devices
+    ngen = generators.shape[0]
+    max_size = np.prod(basis.shape[:-2])
+    if monitor_norms:
+        if num_dev != 0:
+            device = NamedSharding(sharding.mesh, PartitionSpec(None, None))
+        else:
+            device = jax.devices()[0]
+        cnorms = jnp.zeros((max_size, ngen), device=device)
+        onorms = jnp.zeros((max_size, ngen), device=device)
+        oflags = jnp.zeros((max_size, ngen), dtype=np.bool, device=device)
+
     # Main loop: generate nested commutators
     idx_op = 0
     basis_size = generators.shape[0]
@@ -201,16 +232,21 @@ def _compute_closure(
         main_loop_start = time.time()
         # Main (inner) loop: iteratively compute the next commutator and update the basis based on
         # the current one
-        max_size = np.prod(basis.shape[:-2])
-        idx_op, generators, basis, new_size = jax.lax.while_loop(
+        init = (idx_op, generators, basis, basis_size)
+        if monitor_norms:
+            init += (cnorms, onorms, oflags)
+        val = jax.lax.while_loop(
             lambda val: jnp.logical_not(
                 (val[0] >= val[3])  # idx_op >= new_size -> commutator exhausted
                 | (val[3] == max_dim)  # new_size == max_dim -> reached max dim
                 | (val[3] == max_size)  # new_size == array size -> need reallocation
             ),
             loop_body,
-            (idx_op, generators, basis, basis_size)
+            init
         )
+        idx_op, generators, basis, new_size = val[:4]
+        if monitor_norms:
+            cnorms, onorms, oflags = val[4:]
 
         LOG.info('Found %d new ops in %.2fs. New size %d',
                  new_size - basis_size, time.time() - main_loop_start, new_size)
@@ -227,14 +263,23 @@ def _compute_closure(
             basis = jnp.pad(basis, ((0, 0), (0, local_unit), (0, 0), (0, 0)))
         else:
             basis = jnp.pad(basis, ((0, basis_alloc_unit), (0, 0), (0, 0)))
+        max_size = np.prod(basis.shape[:-2])
+        if monitor_norms:
+            cnorms = jnp.pad(cnorms, ((0, basis_alloc_unit), (0, 0)))
+            onorms = jnp.pad(onorms, ((0, basis_alloc_unit), (0, 0)))
+            oflags = jnp.pad(oflags, ((0, basis_alloc_unit), (0, 0)))
 
     if num_dev != 0:
         # basis[:basis_size] may not fit in one device -> return the sharded array as is along
         # with the indices
         # pylint: disable-next=unbalanced-tuple-unpacking
         indices = np.unravel_index(np.arange(basis_size), basis.shape[:2][::-1])
+        if monitor_norms:
+            return basis, indices[::-1], cnorms, onorms, oflags
         return basis, indices[::-1]
 
+    if monitor_norms:
+        return basis[:basis_size], cnorms, onorms, oflags
     return basis[:basis_size]
 
 
@@ -246,7 +291,8 @@ def lie_closure(
     skew_hermitian: bool = False,
     cutoff: float | tuple[float, float] = 1.e-08,
     basis_alloc_unit: int = 1024,
-    shard_basis: bool = False
+    shard_basis: bool = False,
+    monitor_norms: bool = False
 ) -> Array:
     """Compute the Lie closure of given generators.
 
@@ -278,6 +324,7 @@ def lie_closure(
         return generators
 
     # Make the main loop function
-    loop_body = _get_loop_body(print_every, commutator, innerprod, *cutoff)
+    loop_body = _get_loop_body(print_every, commutator, innerprod, cutoff[0], cutoff[1],
+                               monitor_norms)
     # Run the loop
-    return _compute_closure(generators, basis, max_dim, loop_body, basis_alloc_unit)
+    return _compute_closure(generators, basis, max_dim, loop_body, basis_alloc_unit, monitor_norms)

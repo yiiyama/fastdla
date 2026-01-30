@@ -130,7 +130,7 @@ def _gram_schmidt_jnp(
     def loop_body(val):
         ivec, _vectors, _basis, _basis_size = val[:4]
         if monitor_onorms:
-            onorms = val[4]
+            onorms, oflags = val[4:]
         has_orth, orth, onorm = orthonormalize(_vectors[ivec], _basis, cutoff=cutoff,
                                                innerprod=innerprod, npmod=jnp)
         _basis, _basis_size = jax.lax.cond(
@@ -141,23 +141,20 @@ def _gram_schmidt_jnp(
         )
         val = (ivec + 1, _vectors, _basis, _basis_size)
         if monitor_onorms:
-            val += (onorms.at[ivec].set(onorm),)
+            val += (onorms.at[ivec].set(onorm), oflags.at[ivec].set(has_orth))
         return val
 
     max_size = np.prod(basis.shape[:-2])
     init = (0, vectors, basis, basis_size)
     if monitor_onorms:
-        init += (jnp.empty(vectors.shape[0]),)
+        init += (jnp.empty(vectors.shape[0]), jnp.empty(vectors.shape[0], dtype=np.bool))
 
     result = jax.lax.while_loop(
         lambda val: (val[0] < val[1].shape[0]) & (val[3] < max_size),
         loop_body,
         init
     )
-    basis, basis_size = result[2:]
-    if monitor_onorms:
-        return basis, basis_size, result[-1]
-    return basis, basis_size
+    return result[2:]
 
 
 def gram_schmidt(
