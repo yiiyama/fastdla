@@ -21,21 +21,15 @@ from fastdla.linalg.hermitian_ops_jax import (
     to_complex_matrix,
     from_complex_matrix
 )
-from fastdla.algorithms.gram_schmidt import gram_schmidt
+from fastdla.algorithms.gram_schmidt import _gram_schmidt_jnp
 
 LOG = logging.getLogger(__name__)
-
-_gs_update_generic = jax.jit(
-    partial(gram_schmidt, innerprod_op=minnerprod, npmod=jnp)
-)
-_gs_update_skew = jax.jit(
-    partial(gram_schmidt, innerprod_op=hinnerprod, npmod=jnp)
-)
 
 
 def _lie_basis(
     ops: Array,
-    gs_update: Callable
+    innerprod: Callable,
+    cutoff
 ) -> np.ndarray:
     """Identify a basis for the linear space spanned by ops.
 
@@ -51,7 +45,7 @@ def _lie_basis(
 
     # Initialize a list of normalized generators
     basis = jnp.zeros_like(ops)
-    basis, basis_size = gs_update(ops, basis=basis, basis_size=0)
+    basis, basis_size = _gram_schmidt_jnp(ops, basis, 0, cutoff, innerprod)
     return basis[:basis_size]
 
 
@@ -63,12 +57,11 @@ def lie_basis(
 ) -> np.ndarray:
     if skew_hermitian:
         ops = from_complex_matrix(ops, skew=True)
-        gs_update = _gs_update_skew
+        innerprod = hinnerprod
     else:
-        gs_update = _gs_update_generic
-    gs_update = partial(gs_update, cutoff=cutoff)
+        innerprod = minnerprod
 
-    basis = _lie_basis(ops, gs_update)
+    basis = _lie_basis(ops, innerprod, cutoff)
 
     if skew_hermitian:
         basis = to_complex_matrix(basis, skew=True)
@@ -77,9 +70,10 @@ def lie_basis(
 
 def _init_basis(
     generators: Array,
-    gs_update: Callable,
+    innerprod: Callable,
     alloc_unit: int,
-    shard: bool
+    shard: bool,
+    orthonorm_cutoff
 ):
     if (num_gen := generators.shape[0]) == 0:
         raise ValueError('Empty set of generators')
@@ -99,7 +93,7 @@ def _init_basis(
         basis_shape = (max_size,) + generators.shape[1:]
 
     basis = jnp.zeros(basis_shape, dtype=generators.dtype, device=sharding)
-    basis, basis_size = gs_update(generators, basis=basis, basis_size=0)
+    basis, basis_size = _gram_schmidt_jnp(generators, basis, 0, orthonorm_cutoff, innerprod)
 
     if shard:
         # Sharded basis is filled evenly on devices
@@ -115,8 +109,10 @@ def _init_basis(
 
 def _get_loop_body(
     print_every: int | None,
-    gs_update: Callable,
-    commutator: Callable
+    commutator: Callable,
+    innerprod: Callable,
+    comm_cutoff,
+    orthonorm_cutoff
 ):
     """Make the compiled loop body function using the given algorithm."""
     log_level = LOG.getEffectiveLevel()
@@ -155,7 +151,10 @@ def _get_loop_body(
             comms = commutator(generators, basis[idx_op])
             incr = 1
 
-        basis, new_size = gs_update(comms, basis=basis, basis_size=basis_size)
+        comm_norms = jnp.sqrt(innerprod(comms, comms))[..., None, None]
+        comms = jnp.where(comm_norms < comm_cutoff, jnp.zeros_like(comms), comms)
+
+        basis, new_size = _gram_schmidt_jnp(comms, basis, basis_size, orthonorm_cutoff, innerprod)
         # Handle overshoots:
         # Sharded basis
         # Case A: basis array size == new_size
@@ -245,7 +244,7 @@ def lie_closure(
     max_dim: Optional[int] = None,
     print_every: Optional[int] = None,
     skew_hermitian: bool = False,
-    cutoff: float = 1.e-08,
+    cutoff: float | tuple[float, float] = 1.e-08,
     basis_alloc_unit: int = 1024,
     shard_basis: bool = False
 ) -> Array:
@@ -261,15 +260,17 @@ def lie_closure(
     """
     if skew_hermitian:
         generators = from_complex_matrix(generators, skew=True)
-        gs_update = _gs_update_skew
         commutator = partial(hcommutator, skew=True, is_matrix=(True, False))
+        innerprod = hinnerprod
     else:
         generators = jnp.asarray(generators)
-        gs_update = _gs_update_generic
         commutator = mcommutator
-    gs_update = partial(gs_update, cutoff=cutoff)
+        innerprod = minnerprod
 
-    generators, basis = _init_basis(generators, gs_update, basis_alloc_unit, shard_basis)
+    if not isinstance(cutoff, tuple):
+        cutoff = (cutoff,) * 2
+
+    generators, basis = _init_basis(generators, innerprod, basis_alloc_unit, shard_basis, cutoff[1])
     if skew_hermitian:
         generators = to_matrix_stack(generators, skew=True)
 
@@ -277,6 +278,6 @@ def lie_closure(
         return generators
 
     # Make the main loop function
-    loop_body = _get_loop_body(print_every, gs_update, commutator)
+    loop_body = _get_loop_body(print_every, commutator, innerprod, *cutoff)
     # Run the loop
     return _compute_closure(generators, basis, max_dim, loop_body, basis_alloc_unit)

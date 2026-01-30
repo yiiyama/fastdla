@@ -2,16 +2,13 @@
 import logging
 from collections.abc import Callable
 from functools import partial
+from warnings import warn
 from typing import Optional
 import numpy as np
 from numpy.typing import NDArray
-try:
-    import jax
-    import jax.numpy as jnp
-    from jax.sharding import NamedSharding, PartitionSpec
-except ImportError:
-    jax = None
-    jnp = None
+import jax
+import jax.numpy as jnp
+from jax.sharding import NamedSharding, PartitionSpec
 from fastdla.linalg.vector_ops import innerprod
 
 LOG = logging.getLogger(__name__)
@@ -76,57 +73,69 @@ def orthonormalize(
     return npmod.isclose(renorm, 1.), reorth, vnorm
 
 
-def _gram_schmidt_update(
-    vector: NDArray,
+def _gram_schmidt_np(
+    vectors: NDArray,
     basis: NDArray,
-    basis_size: int | None,
+    basis_size: int,
     cutoff: float,
     innerprod_op,
-    on_overflow: Optional[str] = None,
-    npmod=np
-) -> tuple[NDArray, int | None]:
-    """Identify the orthogonal component and update the basis."""
-    has_orth, orth, _ = orthonormalize(vector, basis, cutoff=cutoff, innerprod_op=innerprod_op,
-                                       npmod=npmod)
-
-    if npmod is np:
-        if LOG.getEffectiveLevel() <= logging.DEBUG:
-            if has_orth:
-                LOG.debug('Found an orthogonal component. Updating basis to size %d',
-                          basis_size + 1)
-            else:
-                LOG.debug('No orthogonal component found.')
-
+    on_overflow: str = 'raise'
+) -> tuple[NDArray, int]:
+    for vector in vectors:
+        has_orth, orth, _ = orthonormalize(vector, basis, cutoff=cutoff, innerprod_op=innerprod_op)
         if has_orth:
-            if basis_size is None:
-                # Is only valid for npmod=np
-                basis = np.concatenate([basis, orth[None, :]], axis=0)
-            elif basis_size == basis.shape[0]:
+            LOG.debug('Found an orthogonal component. Updating basis to size %d', basis_size + 1)
+            if basis_size == basis.shape[0]:
                 if on_overflow == 'raise':
                     raise RuntimeError('Basis array overflow')
                 if on_overflow == 'warn':
-                    pass  # user warning
+                    warn('Basis array overflow')
             else:
                 basis[basis_size] = orth
                 basis_size += 1
-    else:
-        sharding = jax.typeof(basis).sharding
-        if (num_dev := sharding.num_devices) != 0:
-            def update(_vec, _basis, _pos):
-                iround = _pos // num_dev
-                idev = _pos % num_dev
-                return _basis.at[idev, iround].set(_vec, out_sharding=sharding), _pos + 1
-
         else:
-            def update(_vec, _basis, _pos):
-                return _basis.at[_pos].set(_vec), _pos + 1
+            LOG.debug('No orthogonal component found.')
 
-        basis, basis_size = jax.lax.cond(
+    return basis, basis_size
+
+
+@partial(jax.jit, static_argnums=[4])
+def _gram_schmidt_jnp(
+    vectors: NDArray,
+    basis: NDArray,
+    basis_size: int,
+    cutoff: float,
+    innerprod_op,
+) -> tuple[NDArray, int]:
+    sharding = jax.typeof(basis).sharding
+    if (num_dev := sharding.num_devices) != 0:
+        def update(_vec, _basis, _pos):
+            iround = _pos // num_dev
+            idev = _pos % num_dev
+            return _basis.at[idev, iround].set(_vec, out_sharding=sharding), _pos + 1
+
+    else:
+        def update(_vec, _basis, _pos):
+            return _basis.at[_pos].set(_vec), _pos + 1
+
+    def loop_body(val):
+        ivec, _vectors, _basis, _basis_size = val
+        has_orth, orth, _ = orthonormalize(_vectors[ivec], _basis, cutoff=cutoff,
+                                           innerprod_op=innerprod_op, npmod=jnp)
+        _basis, _basis_size = jax.lax.cond(
             has_orth,
             update,
             lambda v, b, p: (b, p),
-            orth, basis, basis_size
+            orth, _basis, _basis_size
         )
+        return ivec + 1, _vectors, _basis, _basis_size
+
+    max_size = np.prod(basis.shape[:-2])
+    basis, basis_size = jax.lax.while_loop(
+        lambda val: (val[0] < val[1].shape[0]) & (val[3] < max_size),
+        loop_body,
+        (0, vectors, basis, basis_size)
+    )[2:]
 
     return basis, basis_size
 
@@ -135,8 +144,8 @@ def gram_schmidt(
     vectors: NDArray,
     basis: Optional[NDArray] = None,
     basis_size: Optional[int] = None,
-    on_overflow: str = 'raise',
     cutoff: float = 1.e-08,
+    on_overflow: str = 'raise',
     innerprod_op: Callable[[NDArray, NDArray], NDArray] = innerprod,
     npmod=np
 ) -> NDArray | tuple[NDArray, int]:
@@ -156,32 +165,11 @@ def gram_schmidt(
         A full array of orthonormal vectors that span the space that is spanned by the given vectors
         and basis.
     """
+    if basis is None:
+        basis = npmod.zeros_like(vectors)
+        basis_size = 0
+
     if npmod is np:
-        start = 0
-        if basis is None:
-            if vectors.shape[0] == 0:
-                return vectors.copy()
-            basis = vectors[0:1] / np.sqrt(innerprod_op(vectors[0], vectors[0]))
-            basis_size = None
-            start = 1
-
-        for vector in vectors[start:]:
-            basis, basis_size = _gram_schmidt_update(vector, basis, basis_size, cutoff,
-                                                     innerprod_op, on_overflow=on_overflow)
-    else:
-        def update(val):
-            ivec, _vectors, _basis, _basis_size = val
-            _basis, _basis_size = _gram_schmidt_update(_vectors[ivec], _basis, _basis_size, cutoff,
-                                                       innerprod_op, npmod=npmod)
-            return ivec + 1, _vectors, _basis, _basis_size
-
-        max_size = np.prod(basis.shape[:-2])
-        basis, basis_size = jax.lax.while_loop(
-            lambda val: (val[0] < val[1].shape[0]) & (val[3] < max_size),
-            update,
-            (0, vectors, basis, basis_size)
-        )[2:]
-
-    if basis_size is None:
-        return basis
-    return basis, basis_size
+        return _gram_schmidt_np(vectors, basis, basis_size, cutoff, innerprod_op, on_overflow)
+    if npmod is jnp:
+        return _gram_schmidt_jnp(vectors, basis, basis_size, cutoff, innerprod_op)
