@@ -26,7 +26,6 @@ def magnetization_projection(
             projected = np.array(basis)
             projected[target_states] = 0.
         else:
-            basis = npmod.asarray(basis)
             projected = basis.at[target_states].set(0.)
         return projected
 
@@ -81,7 +80,7 @@ def parity_reflection(
         dest = np.roll(np.arange(num_spins)[::-1], num_spins - 2 * max(reflect_about))
 
     def op(basis):
-        basis = basis.reshape((2,) * num_spins + (-1,))
+        basis = npmod.reshape(basis, (2,) * num_spins + (-1,), copy=True)
         basis = npmod.moveaxis(basis, np.arange(num_spins), dest)
         basis = basis.reshape((2 ** num_spins, -1))
         return basis
@@ -129,7 +128,7 @@ def translation(
 
     def op(basis):
         """Translate the states in the basis."""
-        basis = basis.reshape((2,) * num_spins + (-1,))
+        basis = npmod.reshape(basis, (2,) * num_spins + (-1,), copy=True)
         src = np.arange(num_spins)
         dest = np.roll(np.arange(num_spins), -shift)
         basis = npmod.moveaxis(basis, src, dest)
@@ -185,7 +184,7 @@ def spin_flip(npmod=np) -> LinearOpFunction:
         """Flip the spins of the basis states."""
         # Spin flip of a state vector actually corresponds to a simple order reverse
         # [0000, 0001, 0010, ...] <-> [1111, 1110, 1101, ...]
-        return basis[::-1, ...]
+        return npmod.array(basis[::-1, ...])
 
     if npmod is jnp:
         op = jax.jit(op)
