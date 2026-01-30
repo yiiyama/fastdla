@@ -82,6 +82,7 @@ def _gram_schmidt_update(
     basis_size: int | None,
     cutoff: float,
     innerprod_op,
+    on_overflow: Optional[str] = None,
     npmod=np
 ) -> tuple[NDArray, int | None]:
     """Identify the orthogonal component and update the basis."""
@@ -100,6 +101,11 @@ def _gram_schmidt_update(
             if basis_size is None:
                 # Is only valid for npmod=np
                 basis = np.concatenate([basis, orth[None, :]], axis=0)
+            elif basis_size == basis.shape[0]:
+                if on_overflow == 'raise':
+                    raise RuntimeError('Basis array overflow')
+                if on_overflow == 'warn':
+                    pass  # user warning
             else:
                 basis[basis_size] = orth
                 basis_size += 1
@@ -129,7 +135,7 @@ def gram_schmidt(
     vectors: NDArray,
     basis: Optional[NDArray] = None,
     basis_size: Optional[int] = None,
-    on_saturation: str = 'raise',
+    on_overflow: str = 'raise',
     cutoff: float = 1.e-08,
     innerprod_op: Callable[[NDArray, NDArray], NDArray] = innerprod,
     npmod=np
@@ -161,13 +167,7 @@ def gram_schmidt(
 
         for vector in vectors[start:]:
             basis, basis_size = _gram_schmidt_update(vector, basis, basis_size, cutoff,
-                                                     innerprod_op)
-            if basis_size == basis.shape[0]:
-                if on_saturation == 'raise':
-                    raise RuntimeError('Basis array saturated')
-                if on_saturation == 'warn':
-                    pass  # user warning
-                break
+                                                     innerprod_op, on_overflow=on_overflow)
     else:
         def update(val):
             ivec, _vectors, _basis, _basis_size = val
