@@ -296,7 +296,7 @@ def z2lgt_physical_p_eigenspace(
     basis: Optional[np.ndarray] = None,
     npmod=np
 ) -> np.ndarray:
-    return parity_eigenspace(sign, basis=basis, num_spins=len(gauss_eigvals), reflect_about=0,
+    return parity_eigenspace(sign, basis=basis, num_spins=len(gauss_eigvals), reflect_about=(-1, 0),
                              npmod=npmod)
 
 
