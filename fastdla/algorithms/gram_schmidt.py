@@ -83,18 +83,19 @@ def _gram_schmidt_np(
     innerprod: Optional[Callable] = None,
     on_overflow: str = 'raise'
 ) -> tuple[NDArray, int]:
-    if innerprod is None:
-        innerprod = np.vecdot
-
     for vector in vectors:
         has_orth, orth, _ = orthonormalize(vector, basis, cutoff=cutoff, innerprod=innerprod)
         if has_orth:
             LOG.debug('Found an orthogonal component. Updating basis to size %d', basis_size + 1)
             if basis_size == basis.shape[0]:
-                if on_overflow == 'raise':
-                    raise RuntimeError('Basis array overflow')
-                if on_overflow == 'warn':
-                    warn('Basis array overflow')
+                match on_overflow:
+                    case 'raise':
+                        raise RuntimeError('Basis array overflow')
+                    case 'warn':
+                        warn('Basis array overflow')
+                    case 'extend':
+                        basis = np.concatenate([basis, orth[None, :]], axis=0)
+                        basis_size += 1
             else:
                 basis[basis_size] = orth
                 basis_size += 1
@@ -113,17 +114,18 @@ def _gram_schmidt_jnp(
     innerprod: Optional[Callable] = None,
     monitor_onorms: bool = False
 ) -> tuple[NDArray, int]:
-    if innerprod is None:
-        innerprod = jnp.vecdot
-
     sharding = jax.typeof(basis).sharding
     if (num_dev := sharding.num_devices) != 0:
+        max_size = np.prod(basis.shape[:2])
+
         def update(_vec, _basis, _pos):
             iround = _pos // num_dev
             idev = _pos % num_dev
             return _basis.at[idev, iround].set(_vec, out_sharding=sharding), _pos + 1
 
     else:
+        max_size = basis.shape[0]
+
         def update(_vec, _basis, _pos):
             return _basis.at[_pos].set(_vec), _pos + 1
 
@@ -144,7 +146,6 @@ def _gram_schmidt_jnp(
             val += (onorms.at[ivec].set(onorm), oflags.at[ivec].set(has_orth))
         return val
 
-    max_size = np.prod(basis.shape[:-2])
     init = (0, vectors, basis, basis_size)
     if monitor_onorms:
         init += (jnp.empty(vectors.shape[0]), jnp.empty(vectors.shape[0], dtype=np.bool))
@@ -187,7 +188,32 @@ def gram_schmidt(
         basis_size = 0
 
     if npmod is np:
+        if innerprod is None:
+            match vectors.ndim:
+                case 2:
+                    innerprod = np.vecdot
+                case 3:
+                    # pylint: disable-next=function-redefined
+                    def innerprod(op1, op2):
+                        return np.vecdot(
+                                op1.reshape(op1.shape[:-2] + (-1,)),
+                                op2.reshape(op2.shape[:-2] + (-1,))
+                            ) / op1.shape[-1]
+                case _:
+                    raise NotImplementedError(f'Innerprod for {vectors.ndim}-dim arrays')
+
         return _gram_schmidt_np(vectors, basis, basis_size, cutoff, innerprod=innerprod,
                                 on_overflow=on_overflow)
     if npmod is jnp:
+        if innerprod is None:
+            match vectors.ndim:
+                case 2:
+                    innerprod = jnp.vecdot
+                case 3:
+                    # pylint: disable-next=import-outside-toplevel
+                    from fastdla.linalg.matrix_ops_jax import innerprod as _innerprod
+                    innerprod = _innerprod
+                case _:
+                    raise NotImplementedError(f'Innerprod for {vectors.ndim}-dim arrays')
+
         return _gram_schmidt_jnp(vectors, basis, basis_size, cutoff, innerprod=innerprod)
