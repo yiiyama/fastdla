@@ -131,7 +131,7 @@ def _get_loop_body(
     @jax.jit
     def loop_body(val: tuple) -> tuple:
         """Compute the commutator and update the basis with orthogonal components."""
-        idx_op, generators, basis, basis_size = val[:4]
+        generators, idx_op, basis, basis_size = val[:4]
         if monitor_norms:
             cnorms, onorms, oflags = val[4:]
 
@@ -196,7 +196,7 @@ def _get_loop_body(
                 idx_op_incr
             )
         )
-        val = (new_idx, generators, basis, new_size)
+        val = (generators, new_idx, basis, new_size)
         if monitor_norms:
             val += (cnorms, onorms, oflags)
         return val
@@ -232,19 +232,19 @@ def _compute_closure(
         main_loop_start = time.time()
         # Main (inner) loop: iteratively compute the next commutator and update the basis based on
         # the current one
-        init = (idx_op, generators, basis, basis_size)
+        init = (generators, idx_op, basis, basis_size)
         if monitor_norms:
             init += (cnorms, onorms, oflags)
         val = jax.lax.while_loop(
             lambda val: jnp.logical_not(
-                (val[0] >= val[3])  # idx_op >= new_size -> commutator exhausted
+                (val[1] >= val[3])  # idx_op >= new_size -> commutator exhausted
                 | (val[3] == max_dim)  # new_size == max_dim -> reached max dim
                 | (val[3] == max_size)  # new_size == array size -> need reallocation
             ),
             loop_body,
             init
         )
-        idx_op, generators, basis, new_size = val[:4]
+        idx_op, basis, new_size = val[1:4]
         if monitor_norms:
             cnorms, onorms, oflags = val[4:]
 
