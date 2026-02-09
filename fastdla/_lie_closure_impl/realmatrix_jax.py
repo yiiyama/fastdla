@@ -2,7 +2,6 @@
 """JAX implementation of the Lie closure generator."""
 from collections.abc import Callable, Sequence
 from functools import partial
-from itertools import product
 import logging
 from typing import Optional
 import time
@@ -115,16 +114,17 @@ def _init_basis(
         gens = tuple(gens)
     else:
         gens = (to_s_matrix(basis_is[:basis_is_size]), to_a_matrix(basis_ra[:basis_ra_size]))
-    LOG.info('Number of independent generators: %d', basis_size)
+    LOG.info('Number of independent generators: %d symmetric %d antisymmetric',
+             basis_is_size, basis_ra_size)
     return gens, (basis_is, basis_ra)
 
 
 def _get_loop_body(
-    symm_generators: bool,
-    symm_pool: bool,
+    ipool: int,
     print_every: int | None,
     comm_cutoff: float,
     orthonorm_cutoff: float,
+    batch_size: int = 1
 ):
     """Make the compiled loop body function using the given algorithm."""
     log_level = LOG.getEffectiveLevel()
@@ -139,14 +139,14 @@ def _get_loop_body(
     def callback(idx_op, basis_size):
         LOG.log(log_level, 'Calculating commutators with op %d/%d', idx_op, basis_size)
 
+    to_matrix = (to_s_matrix, to_a_matrix)[ipool]
+
     @jax.jit
     def loop_body(val: tuple) -> tuple:
         """Compute the commutator and update the basis with orthogonal components."""
-        idx_op, generators, pool, pool_size = val[:4]
-        if symm_generators:
-            basis, basis_size = val[4:]
-        else:
-            basis, basis_size = pool, pool_size
+        generators, idx_op, bases, basis_sizes, stop_state = val
+        pool = bases[ipool]
+        pool_size = basis_sizes[ipool]
 
         if print_every > 0:
             jax.lax.cond(
@@ -155,72 +155,82 @@ def _get_loop_body(
                 lambda: None
             )
 
-        if symm_pool:
-            to_matrix = to_s_matrix
-        else:
-            to_matrix = to_a_matrix
-        if symm_generators == symm_pool:
-            if symm_generators:
-                commutator = partial(commutator_ra, is_ops=True)
+        sharding = jax.typeof(bases[ipool]).sharding
+        num_dev = sharding.num_devices
+        duplication = NamedSharding(sharding.mesh, PartitionSpec(None, None, None))
+
+        def compute_and_update(igen):
+            if igen == ipool:
+                if ipool == 0:
+                    commutator = partial(commutator_ra, is_ops=True)
+                else:
+                    commutator = commutator_ra
+                innerprod = innerprod_ra
+                basis = bases[1]
+                basis_size = basis_sizes[1]
             else:
-                commutator = commutator_ra
-            innerprod = innerprod_ra
-        else:
-            commutator = commutator_is
-            innerprod = innerprod_is
+                commutator = commutator_is
+                innerprod = innerprod_is
+                basis = bases[0]
+                basis_size = basis_sizes[0]
 
-        sharding = jax.typeof(basis).sharding
-        if (num_dev := sharding.num_devices) != 0:
-            iround = idx_op // num_dev
-            duplication = NamedSharding(sharding.mesh, PartitionSpec(None, None, None))
-            ops = to_matrix(pool[:, iround])
-            comms = commutator(generators[None, ...], ops[:, None])
-            comms = comms.reshape((-1,) + comms.shape[2:])
-            comms = jax.device_put(comms, duplication)
-            incr = num_dev
-        else:
-            ops = to_matrix(pool[idx_op])
-            comms = commutator(generators, ops)
-            incr = 1
+            if num_dev == 0:
+                elements = jax.lax.dynamic_slice_in_dim(pool, idx_op, batch_size, axis=0)
+                ops = to_matrix(elements)
+                comms = commutator(generators[igen][None, ...], ops[:, None])
+                comms = comms.reshape((-1,) + comms.shape[2:])
+            else:
+                iround = idx_op // num_dev
+                ops = to_matrix(pool[:, iround])
+                comms = commutator(generators[igen][None, ...], ops[:, None])
+                comms = comms.reshape((-1,) + comms.shape[2:])
+                comms = jax.device_put(comms, duplication)
 
-        comm_norms = jnp.sqrt(innerprod(comms, comms))[..., None]
-        comms = jnp.where(comm_norms < comm_cutoff, jnp.zeros_like(comms), comms)
+            comm_norms = jnp.sqrt(innerprod(comms, comms))[..., None]
+            comms = jnp.where(comm_norms < comm_cutoff, jnp.zeros_like(comms), comms)
+            return _gram_schmidt_jnp(comms, basis, basis_size, orthonorm_cutoff,
+                                     innerprod=innerprod)
 
-        # pylint: disable-next=unbalanced-tuple-unpacking
-        basis, new_size = _gram_schmidt_jnp(comms, basis, basis_size, orthonorm_cutoff, innerprod)
+        bidx = (1 - ipool, ipool)
+        new_bases = [None, None]
+        new_sizes = [None, None]
+        new_bases[bidx[0]], new_sizes[bidx[0]] = compute_and_update(0)
+        new_bases[bidx[1]], new_sizes[bidx[1]] = compute_and_update(1)
+        bases = tuple(new_bases)
 
-        # Handle overshoots:
-        # Sharded basis
-        # Case A: basis array size == new_size
-        #   -> Resize the basis array and resume the loop from idx_op
-        # Case B: (idx_op + num_dev > old_size > idx_op) and (new_size > old_size)
-        #   -> Stay at idx_op
-        # Case C: (idx_op + num_dev > old_size > idx_op) and (new_size == old_size)
-        #   -> Normal termination
-        # Unsharded basis
-        # Case A: basis array size == new_size
-        #   -> Resize the basis array and resume the loop from idx_op
-        max_size = np.prod(basis.shape[:-2])
-        idx_op_incr = idx_op + incr
-        new_idx = jax.lax.select(
-            jnp.equal(new_size, max_size),
-            idx_op,
-            jax.lax.select(
-                jnp.greater(idx_op_incr, basis_size) & jnp.greater(basis_size, idx_op),
-                jax.lax.select(
-                    jnp.not_equal(new_size, basis_size),
-                    idx_op,
-                    idx_op_incr
-                ),
-                idx_op_incr
+        max_sizes = [np.prod(basis.shape[:-1]) for basis in bases]
+        incr = batch_size if num_dev == 0 else num_dev
+        # Check if we should increment the idx_op pointer
+        # - If either basis array size == new_size
+        #   -> Resize the basis array and resume the loop from idx_op (2)
+        # - If idx_op + incr >= pool_size (> idx_op)
+        #   - If new_size == pool_size
+        #     -> Normal termination (1)
+        #   - If new_size > pool_size
+        #     -> Unchecked ops exist between idx_op and idx_op + incr. Do not increment (0)
+        # - If pool_size > idx_op + incr
+        #   -> Normal increment (0)
+        idx_op, stop_state = jax.lax.cond(
+            jnp.logical_or(
+                jnp.equal(new_sizes[0], max_sizes[0]),
+                jnp.equal(new_sizes[1], max_sizes[1])
+            ),
+            lambda: (idx_op, 2),
+            lambda: (
+                jax.lax.cond(
+                    jnp.greater_equal(idx_op + incr, pool_size),
+                    lambda: (
+                        jax.lax.cond(
+                            jnp.equal(new_sizes[ipool], pool_size),
+                            lambda: (pool_size, 1),
+                            lambda: (idx_op, 0)
+                        )
+                    ),
+                    lambda: (idx_op + incr, 0)
+                )
             )
         )
-        val = (new_idx, generators)
-        if symm_generators:
-            val += (pool, pool_size, basis, new_size)
-        else:
-            val += (basis, new_size)
-        return val
+        return generators, idx_op, tuple(bases), tuple(new_sizes), stop_state
 
     return loop_body
 
@@ -234,70 +244,48 @@ def _compute_closure(
 ):
     sharding = jax.typeof(bases[0]).sharding
     num_dev = sharding.num_devices
+    labels = ['symmetric', 'antisymmetric']
 
-    def inner_loop(loop_body, gens, idx_op, pool, pool_size, basis=None, basis_size=None):
-        init = (gens, idx_op, pool, pool_size)
-        if basis is not None:
-            init += (basis, basis_size)
-        max_size = np.prod(init[-2].shape[:-2])
-
-        val = jax.lax.while_loop(
-            lambda val: jnp.logical_not(
-                (val[1] >= val[3])  # idx_op >= pool_size -> commutator exhausted
-                | (val[-1] == max_dim)  # new_size == max_dim -> reached max dim
-                | (val[-1] == max_size)  # new_size == array size -> need reallocation
-            ),
+    def run_loop(loop_body, idx_op, bases, basis_sizes):
+        init = (generators, idx_op, bases, basis_sizes, 0)
+        _, idx_op, bases, basis_sizes, stop_state = jax.lax.while_loop(
+            lambda val: jnp.equal(val[4], 0),
             loop_body,
             init
         )
-        if basis is None:
-            return val[1], val[2], val[3]
-        return val[1], val[4], val[5]
+        print(idx_op, [b.shape[0] for b in bases], basis_sizes, stop_state, stop_state == 2)
+        if stop_state == 2:
+            # Need to resize basis
+            bases = list(bases)
+            for ib, (basis, basis_size, label) in enumerate(list(zip(bases, basis_sizes, labels))):
+                if basis_size < (max_size := np.prod(basis.shape[:-1])):
+                    continue
+                LOG.debug('Resizing %s basis array to %d', label, max_size + basis_alloc_unit)
+                if num_dev != 0:
+                    local_unit = basis_alloc_unit // num_dev
+                    bases[ib] = jnp.pad(basis, ((0, 0), (0, local_unit), (0, 0)))
+                else:
+                    bases[ib] = jnp.pad(basis, ((0, basis_alloc_unit), (0, 0)))
+            bases = tuple(bases)
+
+        return idx_op, bases, basis_sizes
 
     # Main loop: generate nested commutators
-    bases = list(bases)
     idx_ops = np.zeros(2, dtype=int)
     basis_sizes = np.array([gens.shape[0] for gens in generators])
-    labels = ['symmetric', 'antisymmetric']
-    while True:  # Outer loop to handle memory reallocation
-        main_loop_start = time.time()
-        idxs = np.empty((2, 2), dtype=int)
-        new_sizes = np.array(basis_sizes)
-        # Symmetric generators, symmetric pool -> update antisymmetric
-        idxs[0, 0], bases[1], new_sizes[1] = inner_loop(loop_bodies[(True, True)], generators[0],
-                                                        idx_ops[0], bases[0], new_sizes[0],
-                                                        bases[1], new_sizes[1])
-        # Symmetric generators, antisymmetric pool -> update symmetric
-        idxs[0, 1], bases[0], new_sizes[0] = inner_loop(loop_bodies[(True, False)], generators[0],
-                                                        idx_ops[1], bases[1], new_sizes[1],
-                                                        bases[0], new_sizes[0])
-        # Antisymmetric generators, symmetric pool -> update symmetric
-        idxs[1, 0], bases[0], new_sizes[0] = inner_loop(loop_bodies[(False, True)], generators[1],
-                                                        idx_ops[0], bases[0], new_sizes[0])
-        # Antisymmetric generators, antisymmetric pool -> update antisymmetric
-        idxs[1, 1], bases[1], new_sizes[1] = inner_loop(loop_bodies[(False, False)], generators[1],
-                                                        idx_ops[1], bases[1], new_sizes[1])
-
-        LOG.info('Found %d new ops in %.2fs. New size %d',
-                 sum(new_sizes) - sum(basis_sizes), time.time() - main_loop_start, sum(new_sizes))
-
-        idx_ops = np.where(np.all(idxs > idx_ops[None, :], axis=0), idxs[:, 0], idx_ops)
-        basis_sizes = new_sizes
-        if np.all(idx_ops >= basis_sizes) or np.sum(basis_sizes) >= max_dim:
-            # Computed all commutators
-            break
-
-        # Need to resize basis and xmat
-        for ibasis, (basis, basis_size, label) in enumerate(list(zip(bases, basis_sizes, labels))):
-            max_size = np.prod(basis.shape[:-2])
-            if basis_size < max_size:
+    while True:
+        for ib, (idx, loop_body, label) in enumerate(zip(idx_ops, loop_bodies, labels)):
+            if idx_ops[ib] == basis_sizes[ib]:
                 continue
-            LOG.debug('Resizing %s basis array to %d', label, max_size + basis_alloc_unit)
-            if num_dev != 0:
-                local_unit = basis_alloc_unit // num_dev
-                bases[ibasis] = jnp.pad(basis, ((0, 0), (0, local_unit), (0, 0), (0, 0)))
-            else:
-                bases[ibasis] = jnp.pad(basis, ((0, basis_alloc_unit), (0, 0), (0, 0)))
+            loop_start = time.time()
+            idx_ops[ib], bases, new_sizes = run_loop(loop_body, idx, bases, tuple(basis_sizes))
+            LOG.info('Found %d new ops from %s pool in %.2fs. New total size %d',
+                     sum(new_sizes) - sum(basis_sizes), label, time.time() - loop_start,
+                     sum(new_sizes))
+            basis_sizes = np.array(new_sizes)
+
+        if np.all(idx_ops == basis_sizes) or (max_dim and np.sum(basis_sizes) >= max_dim):
+            break
 
     if num_dev != 0:
         # basis[:basis_size] may not fit in one device -> return the sharded array as is along
@@ -319,7 +307,8 @@ def lie_closure(
     print_every: Optional[int] = None,
     cutoff: float | tuple[float, float] = 1.e-08,
     basis_alloc_unit: int = 1024,
-    shard_basis: bool = False
+    shard_basis: bool = False,
+    batch_size: int = 1
 ) -> Array:
     """Compute the Lie closure of given generators.
 
@@ -334,15 +323,13 @@ def lie_closure(
     if not isinstance(cutoff, tuple):
         cutoff = (cutoff,) * 2
 
-    (generators_is, generators_ra), (basis_is, basis_ra) = _init_basis(generators, basis_alloc_unit,
-                                                                       shard_basis, cutoff[1])
+    generators, bases = _init_basis(generators, basis_alloc_unit, shard_basis, cutoff[1])
 
-    if generators_is.shape[0] + generators_ra.shape[0] <= 1:
-        return np.concatenate([1.j * generators_is, generators_ra.astype(np.complex128)], axis=0)
+    if generators[0].shape[0] + generators[1].shape[0] <= 1:
+        return np.concatenate([1.j * generators[0], generators[1].astype(np.complex128)], axis=0)
 
     # Make the main loop function
-    loop_bodies = {flags: _get_loop_body(flags[0], flags[1], print_every, cutoff[0], cutoff[1])
-                   for flags in product([True, False], [True, False])}
+    loop_bodies = [_get_loop_body(ipool, print_every, cutoff[0], cutoff[1], batch_size)
+                   for ipool in [0, 1]]
     # Run the loop
-    return _compute_closure((generators_is, generators_ra), (basis_is, basis_ra), max_dim,
-                            loop_bodies, basis_alloc_unit)
+    return _compute_closure(generators, bases, max_dim, loop_bodies, basis_alloc_unit)

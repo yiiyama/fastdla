@@ -5,6 +5,7 @@ the upper triangle excluding the diagonal (n(n-1)/2 floats) arranged into a 1-di
 anti-symmetric matrix is instead represented by the upper triangle excluding the diagonal (n(n-1)/2
 floats).
 """
+from functools import partial
 import numpy as np
 from numpy.typing import NDArray
 import jax
@@ -64,24 +65,27 @@ def innerprod_ra(
     return ip / dim
 
 
-@jax.jit
-def commutator_s(
+@partial(jax.jit, static_argnames=['is_ops'])
+def commutator_ra(
     op1: NDArray[np.float64],
-    op2: NDArray[np.float64]
+    op2: NDArray[np.float64],
+    is_ops: bool = False
 ) -> NDArray[np.float64]:
     r"""Commutator between two (anti-)symmetric matrices, result encoded as real antisymmetric.
 
-    If the inputs are the imaginary parts of imaginary symmetric matrices, the result must be
-    multiplied by -1.
+    The sign of the result depends on whether the inputs are real antisymmetric or the imaginary
+    parts of imaginary symmetric matrices.
     """
     dim = op1.shape[-1]
     prod = jnp.matmul(op1, op2)
     rows, cols = upper_indices(dim)
+    if is_ops:
+        return prod[..., cols, rows] - prod[..., rows, cols]
     return prod[..., rows, cols] - prod[..., cols, rows]
 
 
 @jax.jit
-def commutator_a(
+def commutator_is(
     op1: NDArray[np.float64],
     op2: NDArray[np.float64]
 ) -> NDArray[np.float64]:

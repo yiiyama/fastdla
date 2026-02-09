@@ -99,6 +99,9 @@ def lie_closure(
     elif kwargs.get('ref_impl', False):
         kwargs.pop('ref_impl')
         from fastdla._lie_closure_impl.matrix_jax_ref import lie_closure as fn
+    elif kwargs.get('real', False):
+        kwargs.pop('real')
+        from fastdla._lie_closure_impl.realmatrix_jax import lie_closure as fn
     else:
         from fastdla._lie_closure_impl.matrix_jax import lie_closure as fn
 
