@@ -114,6 +114,9 @@ def _gram_schmidt_jnp(
     innerprod: Optional[Callable] = None,
     monitor_onorms: bool = False
 ) -> tuple[NDArray, int]:
+    if vectors.shape[0] == 0:
+        return basis, basis_size
+
     sharding = jax.typeof(basis).sharding
     if (num_dev := sharding.num_devices) != 0:
         max_size = np.prod(basis.shape[:2])

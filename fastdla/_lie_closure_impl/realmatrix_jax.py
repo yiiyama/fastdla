@@ -253,7 +253,6 @@ def _compute_closure(
             loop_body,
             init
         )
-        print(idx_op, [b.shape[0] for b in bases], basis_sizes, stop_state, stop_state == 2)
         if stop_state == 2:
             # Need to resize basis
             bases = list(bases)
