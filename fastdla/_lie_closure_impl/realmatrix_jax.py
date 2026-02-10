@@ -79,14 +79,14 @@ def _init_basis(
 
     max_size = ((num_gen - 1) // alloc_unit + 1) * alloc_unit
 
-    if (num_dev := jax.device_count()) > 1:
-        if alloc_unit % num_dev != 0:
+    if (dev_cnt := jax.device_count()) > 1:
+        if alloc_unit % dev_cnt != 0:
             raise ValueError('Basis allocation unit size is not a multiple of device_count')
-        mesh = jax.make_mesh((num_dev,), ('x',), axis_types=(AxisType.Explicit,))
+        mesh = jax.make_mesh((dev_cnt,), ('x',), axis_types=(AxisType.Explicit,))
         sharding = NamedSharding(mesh, PartitionSpec('x'))
-        shard_size = max_size // num_dev
-        basis_is_shape = (num_dev, shard_size, generators_is.shape[1])
-        basis_ra_shape = (num_dev, shard_size, generators_ra.shape[1])
+        shard_size = max_size // dev_cnt
+        basis_is_shape = (dev_cnt, shard_size, generators_is.shape[1])
+        basis_ra_shape = (dev_cnt, shard_size, generators_ra.shape[1])
     else:
         sharding = jax.devices()[0]
         basis_is_shape = (max_size, generators_is.shape[1])
@@ -98,7 +98,7 @@ def _init_basis(
     basis_ra = jnp.zeros(basis_ra_shape, device=sharding)
     basis_ra, basis_ra_size = _gram_schmidt_jnp(generators_ra, basis_ra, 0, orthonorm_cutoff,
                                                 innerprod_ra)
-    if num_dev > 1:
+    if dev_cnt > 1:
         duplication = NamedSharding(mesh, PartitionSpec())
         gens = []
         for basis, basis_size, to_matrix_fn in [
@@ -111,7 +111,7 @@ def _init_basis(
                 continue
             # Sharded basis is filled evenly on devices
             # pylint: disable-next=unbalanced-tuple-unpacking
-            iround, idev = np.unravel_index(np.arange(basis_size), (shard_size, num_dev))
+            iround, idev = np.unravel_index(np.arange(basis_size), (shard_size, dev_cnt))
             gens.append(to_matrix_fn(basis.at[idev, iround].get(out_sharding=duplication)))
         gens = tuple(gens)
     else:
@@ -141,8 +141,8 @@ def _get_loop_body(
     def callback(idx_op, basis_size):
         LOG.log(log_level, 'Calculating commutators with op %d/%d', idx_op, basis_size)
 
-    if (num_dev := jax.device_count()) > 1:
-        mesh = jax.make_mesh((num_dev,), ('x',), axis_types=(AxisType.Explicit,))
+    if (dev_cnt := jax.device_count()) > 1:
+        mesh = jax.make_mesh((dev_cnt,), ('x',), axis_types=(AxisType.Explicit,))
 
     to_matrix = (to_s_matrix, to_a_matrix)[ipool]
 
@@ -175,8 +175,8 @@ def _get_loop_body(
                 basis = bases[0]
                 basis_size = basis_sizes[0]
 
-            if num_dev > 1:
-                iround = idx_op // num_dev
+            if dev_cnt > 1:
+                iround = idx_op // dev_cnt
                 ops = to_matrix(pool[:, iround])
                 comms = commutator(generators[igen][None, ...], ops[:, None])
                 comms = comms.reshape((-1,) + comms.shape[2:])
@@ -201,7 +201,7 @@ def _get_loop_body(
         bases = tuple(new_bases)
 
         max_sizes = [np.prod(basis.shape[:-1]) for basis in bases]
-        incr = batch_size if num_dev == 0 else num_dev
+        incr = batch_size if dev_cnt == 1 else dev_cnt
         # Check if we should increment the idx_op pointer
         # - If either basis array size == new_size
         #   -> Resize the basis array and resume the loop from idx_op (2)
@@ -244,8 +244,7 @@ def _compute_closure(
     loop_bodies: dict[tuple[bool, bool], Callable],
     basis_alloc_unit: int
 ):
-    sharding = jax.typeof(bases[0]).sharding
-    num_dev = sharding.num_devices
+    dev_cnt = jax.device_count()
     labels = ['symmetric', 'antisymmetric']
 
     def run_loop(loop_body, idx_op, bases, basis_sizes):
@@ -262,8 +261,8 @@ def _compute_closure(
                 if basis_size < (max_size := np.prod(basis.shape[:-1])):
                     continue
                 LOG.debug('Resizing %s basis array to %d', label, max_size + basis_alloc_unit)
-                if num_dev != 0:
-                    local_unit = basis_alloc_unit // num_dev
+                if dev_cnt > 1:
+                    local_unit = basis_alloc_unit // dev_cnt
                     bases[ib] = jnp.pad(basis, ((0, 0), (0, local_unit), (0, 0)))
                 else:
                     bases[ib] = jnp.pad(basis, ((0, basis_alloc_unit), (0, 0)))
@@ -288,7 +287,7 @@ def _compute_closure(
         if np.all(idx_ops == basis_sizes) or (max_dim and np.sum(basis_sizes) >= max_dim):
             break
 
-    if num_dev != 0:
+    if dev_cnt > 1:
         # basis[:basis_size] may not fit in one device -> return the sharded array as is along
         # with the indices
         # pylint: disable-next=unbalanced-tuple-unpacking
