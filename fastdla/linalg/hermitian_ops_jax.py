@@ -57,7 +57,7 @@ def commutator(
 
     prod_real = jnp.sum(jnp.matmul(op1, op2) * jnp.array([1, -1])[:, None, None], axis=-3)
     prod_imag = jnp.sum(jnp.matmul(op1[..., ::-1, :, :], op2), axis=-3)
-    rows, cols = upper_indices(dim)
+    rows, cols = np.triu_indices(dim, k=1)
     upper_real = prod_real[..., rows, cols] - prod_real[..., cols, rows]
     upper_imag = prod_imag[..., rows, cols] + prod_imag[..., cols, rows]
     extra_dims = prod_real.shape[:-2]
@@ -82,7 +82,7 @@ def to_matrix_stack(elems: NDArray[np.float64], skew: bool = False) -> Array:
         lower_sign = np.array([1., -1.])[:, None]
         idiag = 0
 
-    rows, cols = upper_indices(dim)
+    rows, cols = np.triu_indices(dim, k=1)
     matrix = matrix.at[..., rows, cols].set(upper)
     matrix = matrix.at[..., cols, rows].set(lower_sign * upper)
     didxs = np.arange(dim)
@@ -105,7 +105,7 @@ def from_matrix_stack(matrix: NDArray[np.float64], skew: bool = False) -> Array:
         diag = diagonals[..., 0, :]
     elements = elements.at[..., :dim].set(diag)
 
-    rows, cols = upper_indices(dim)
+    rows, cols = np.triu_indices(dim, k=1)
     upper = matrix[..., rows, cols]
     low = dim
     high = low + len(rows)
@@ -126,9 +126,3 @@ def to_complex_matrix(elements: NDArray[np.float64], skew: bool = False) -> Arra
 @partial(jax.jit, static_argnames=['skew'])
 def from_complex_matrix(matrix: NDArray[np.complex128], skew: bool = False) -> Array:
     return from_matrix_stack(jnp.stack([matrix.real, matrix.imag], axis=-3), skew=skew)
-
-
-def upper_indices(dim: int) -> tuple[np.ndarray, np.ndarray]:
-    rows = np.array(sum(([i] * (dim - i - 1) for i in range(dim - 1)), []))
-    cols = np.array(sum((list(range(i + 1, dim)) for i in range(dim - 1)), []))
-    return rows, cols
