@@ -68,7 +68,6 @@ def lie_basis(
 def _init_basis(
     generators: Array,
     alloc_unit: int,
-    shard: bool,
     orthonorm_cutoff
 ):
     if (num_gen := generators.shape[0]) == 0:
@@ -80,19 +79,18 @@ def _init_basis(
 
     max_size = ((num_gen - 1) // alloc_unit + 1) * alloc_unit
 
-    if shard:
-        if alloc_unit % jax.device_count() != 0:
+    if (num_dev := jax.device_count()) > 1:
+        if alloc_unit % num_dev != 0:
             raise ValueError('Basis allocation unit size is not a multiple of device_count')
-        mesh = jax.make_mesh((jax.device_count(),), ('x',), axis_types=(AxisType.Explicit,))
-        sharding = NamedSharding(mesh, PartitionSpec('x', None, None, None))
-        num_dev = sharding.num_devices
+        mesh = jax.make_mesh((num_dev,), ('x',), axis_types=(AxisType.Explicit,))
+        sharding = NamedSharding(mesh, PartitionSpec('x'))
         shard_size = max_size // num_dev
-        basis_is_shape = (num_dev, shard_size) + generators_is.shape[1:]
-        basis_ra_shape = (num_dev, shard_size) + generators_ra.shape[1:]
+        basis_is_shape = (num_dev, shard_size, generators_is.shape[1])
+        basis_ra_shape = (num_dev, shard_size, generators_ra.shape[1])
     else:
         sharding = jax.devices()[0]
-        basis_is_shape = (max_size,) + generators_is.shape[1:]
-        basis_ra_shape = (max_size,) + generators_ra.shape[1:]
+        basis_is_shape = (max_size, generators_is.shape[1])
+        basis_ra_shape = (max_size, generators_ra.shape[1])
 
     basis_is = jnp.zeros(basis_is_shape, device=sharding)
     basis_is, basis_is_size = _gram_schmidt_jnp(generators_is, basis_is, 0, orthonorm_cutoff,
@@ -100,16 +98,20 @@ def _init_basis(
     basis_ra = jnp.zeros(basis_ra_shape, device=sharding)
     basis_ra, basis_ra_size = _gram_schmidt_jnp(generators_ra, basis_ra, 0, orthonorm_cutoff,
                                                 innerprod_ra)
-
-    if shard:
+    if num_dev > 1:
+        duplication = NamedSharding(mesh, PartitionSpec())
         gens = []
         for basis, basis_size, to_matrix_fn in [
             (basis_is, basis_is_size, to_s_matrix), (basis_ra, basis_ra_size, to_a_matrix)
         ]:
+            if basis_size == 0:
+                gens.append(
+                    jnp.empty((0,) + generators.shape[1:], dtype=np.float64, device=duplication)
+                )
+                continue
             # Sharded basis is filled evenly on devices
             # pylint: disable-next=unbalanced-tuple-unpacking
             iround, idev = np.unravel_index(np.arange(basis_size), (shard_size, num_dev))
-            duplication = NamedSharding(mesh, PartitionSpec(None, None, None))
             gens.append(to_matrix_fn(basis.at[idev, iround].get(out_sharding=duplication)))
         gens = tuple(gens)
     else:
@@ -139,6 +141,9 @@ def _get_loop_body(
     def callback(idx_op, basis_size):
         LOG.log(log_level, 'Calculating commutators with op %d/%d', idx_op, basis_size)
 
+    if (num_dev := jax.device_count()) > 1:
+        mesh = jax.make_mesh((num_dev,), ('x',), axis_types=(AxisType.Explicit,))
+
     to_matrix = (to_s_matrix, to_a_matrix)[ipool]
 
     @jax.jit
@@ -155,10 +160,6 @@ def _get_loop_body(
                 lambda: None
             )
 
-        sharding = jax.typeof(bases[ipool]).sharding
-        num_dev = sharding.num_devices
-        duplication = NamedSharding(sharding.mesh, PartitionSpec(None, None, None))
-
         def compute_and_update(igen):
             if igen == ipool:
                 if ipool == 0:
@@ -174,17 +175,18 @@ def _get_loop_body(
                 basis = bases[0]
                 basis_size = basis_sizes[0]
 
-            if num_dev == 0:
-                elements = jax.lax.dynamic_slice_in_dim(pool, idx_op, batch_size, axis=0)
-                ops = to_matrix(elements)
-                comms = commutator(generators[igen][None, ...], ops[:, None])
-                comms = comms.reshape((-1,) + comms.shape[2:])
-            else:
+            if num_dev > 1:
                 iround = idx_op // num_dev
                 ops = to_matrix(pool[:, iround])
                 comms = commutator(generators[igen][None, ...], ops[:, None])
                 comms = comms.reshape((-1,) + comms.shape[2:])
-                comms = jax.device_put(comms, duplication)
+                # pylint: disable-next=possibly-used-before-assignment
+                comms = jax.device_put(comms, NamedSharding(mesh, PartitionSpec()))
+            else:
+                elements = jax.lax.dynamic_slice_in_dim(pool, idx_op, batch_size, axis=0)
+                ops = to_matrix(elements)
+                comms = commutator(generators[igen][None, ...], ops[:, None])
+                comms = comms.reshape((-1,) + comms.shape[2:])
 
             comm_norms = jnp.sqrt(innerprod(comms, comms))[..., None]
             comms = jnp.where(comm_norms < comm_cutoff, jnp.zeros_like(comms), comms)
@@ -306,7 +308,6 @@ def lie_closure(
     print_every: Optional[int] = None,
     cutoff: float | tuple[float, float] = 1.e-08,
     basis_alloc_unit: int = 1024,
-    shard_basis: bool = False,
     batch_size: int = 1
 ) -> Array:
     """Compute the Lie closure of given generators.
@@ -322,7 +323,7 @@ def lie_closure(
     if not isinstance(cutoff, tuple):
         cutoff = (cutoff,) * 2
 
-    generators, bases = _init_basis(generators, basis_alloc_unit, shard_basis, cutoff[1])
+    generators, bases = _init_basis(generators, basis_alloc_unit, cutoff[1])
 
     if generators[0].shape[0] + generators[1].shape[0] <= 1:
         return np.concatenate([1.j * generators[0], generators[1].astype(np.complex128)], axis=0)
