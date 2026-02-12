@@ -38,7 +38,7 @@ def orthonormalize(
     if innerprod is None:
         innerprod = npmod.vecdot
 
-    def _orthonormalize(_vector):
+    def _orth_and_norm2(_vector):
         if npmod is jnp and (sharding := jax.typeof(basis).sharding).num_devices != 0:
             sharding = NamedSharding(sharding.mesh, PartitionSpec(*((None,) * _vector.ndim)))
             tensordot = partial(jnp.tensordot, out_sharding=sharding)
@@ -51,28 +51,27 @@ def orthonormalize(
         # but we instead compute the conjugate of the innerprod to reduce the number of computation
         projection = tensordot(innerprod(_vector, basis).conjugate(), basis, axes)
         orth = _vector - projection
-        onorm = npmod.sqrt(innerprod(orth, orth))[..., None]
-        is_null = npmod.isclose(onorm, 0., atol=cutoff)
-        return (npmod.where(is_null, 0., orth) / npmod.where(is_null, 1., onorm),
-                npmod.where(is_null[..., 0], 0., onorm[..., 0]))
+        onorm2 = innerprod(orth, orth)
+        return orth, onorm2, npmod.isclose(onorm2, 0., atol=cutoff**2)
 
-    orth, onorm = _orthonormalize(vector)
+    orth, onorm2, is_null = _orth_and_norm2(vector)
     if npmod is np:
-        LOG.debug('Direct orthogonalization found an orth component with norm %.3e', onorm)
-        if onorm == 0.:
-            return False, np.zeros_like(orth), np.zeros_like(onorm)
+        LOG.debug('Direct orthogonalization found an orth component with norm^2 %.3e', onorm2)
+        if is_null:
+            return False, np.zeros_like(orth), 0.
 
-        reorth, renorm = _orthonormalize(orth)
-        LOG.debug('Re-orthogonalization found an orth component with norm %.3e', renorm)
+        reorth, renorm2, renull = _orth_and_norm2(orth)
+        LOG.debug('Re-orthogonalization found an orth component with norm^2 %.3e', renorm2)
     else:
-        reorth, renorm = jax.lax.cond(
-            jnp.equal(onorm, 0.),
-            lambda _orth, _vnorm: (jnp.zeros_like(_orth), jnp.zeros_like(_vnorm)),
-            lambda _orth, _: _orthonormalize(_orth),
-            orth, onorm
+        reorth, renorm2, renull = jax.lax.cond(
+            is_null,
+            lambda _orth: (jnp.zeros_like(_orth), 0., True),
+            _orth_and_norm2,
+            orth
         )
 
-    return npmod.isclose(renorm, 1.), reorth, onorm
+    result = npmod.where(renull, 0., reorth) / npmod.where(renull, 1., npmod.sqrt(renorm2))
+    return npmod.isclose(renorm2, 1.), result, onorm2
 
 
 def _gram_schmidt_np(
@@ -136,8 +135,8 @@ def _gram_schmidt_jnp(
         ivec, _vectors, _basis, _basis_size = val[:4]
         if monitor_onorms:
             onorms, oflags = val[4:]
-        has_orth, orth, onorm = orthonormalize(_vectors[ivec], _basis, cutoff=cutoff,
-                                               innerprod=innerprod, npmod=jnp)
+        has_orth, orth, onorm2 = orthonormalize(_vectors[ivec], _basis, cutoff=cutoff,
+                                                innerprod=innerprod, npmod=jnp)
         _basis, _basis_size = jax.lax.cond(
             has_orth,
             update,
@@ -146,7 +145,7 @@ def _gram_schmidt_jnp(
         )
         val = (ivec + 1, _vectors, _basis, _basis_size)
         if monitor_onorms:
-            val += (onorms.at[ivec].set(onorm), oflags.at[ivec].set(has_orth))
+            val += (onorms.at[ivec].set(jnp.sqrt(onorm2)), oflags.at[ivec].set(has_orth))
         return val
 
     init = (0, vectors, basis, basis_size)
@@ -191,6 +190,9 @@ def gram_schmidt(
         basis_size = 0
 
     if npmod is np:
+        if basis_size is None:
+            basis_size = basis.shape[0]
+
         if innerprod is None:
             match vectors.ndim:
                 case 2:
@@ -208,6 +210,9 @@ def gram_schmidt(
         return _gram_schmidt_np(vectors, basis, basis_size, cutoff, innerprod=innerprod,
                                 on_overflow=on_overflow)
     if npmod is jnp:
+        if basis_size is None:
+            raise ValueError('basis_size is required')
+
         if innerprod is None:
             match vectors.ndim:
                 case 2:

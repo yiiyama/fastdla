@@ -84,7 +84,7 @@ def _init_basis(
         if alloc_unit % jax.device_count() != 0:
             raise ValueError('Basis allocation unit size is not a multiple of device_count')
         mesh = jax.make_mesh((jax.device_count(),), ('x',), axis_types=(AxisType.Explicit,))
-        sharding = NamedSharding(mesh, PartitionSpec('x', None, None, None))
+        sharding = NamedSharding(mesh, PartitionSpec('x'))
         num_dev = sharding.num_devices
         shard_size = max_size // num_dev
         basis_shape = (num_dev, shard_size) + generators.shape[1:]
@@ -147,15 +147,15 @@ def _get_loop_body(
             iround = idx_op // num_dev
             comms = commutator(generators[None, ...], basis[:, iround][:, None])
             comms = comms.reshape((-1,) + basis.shape[2:])
-            duplication = NamedSharding(sharding.mesh, PartitionSpec(None, None, None))
+            duplication = NamedSharding(sharding.mesh, PartitionSpec())
             comms = jax.device_put(comms, duplication)
             incr = num_dev
         else:
             comms = commutator(generators, basis[idx_op])
             incr = 1
 
-        comm_norms = jnp.sqrt(innerprod(comms, comms))[..., None, None]
-        comms = jnp.where(comm_norms < comm_cutoff, jnp.zeros_like(comms), comms)
+        comm_norm2s = innerprod(comms, comms)[..., None, None]
+        comms = jnp.where(comm_norm2s < comm_cutoff ** 2, jnp.zeros_like(comms), comms)
         # pylint: disable-next=unbalanced-tuple-unpacking
         orthonorm_result = _gram_schmidt_jnp(comms, basis, basis_size, orthonorm_cutoff, innerprod,
                                              monitor_onorms=monitor_norms)
@@ -163,13 +163,12 @@ def _get_loop_body(
         if monitor_norms:
             ngen = generators.shape[0]
             comm_onorms, comm_oflags = orthonorm_result[2:]
-            cnorms = jax.lax.dynamic_update_slice(cnorms, comm_norms.reshape((-1, ngen)),
+            cnorms = jax.lax.dynamic_update_slice(cnorms, jnp.sqrt(comm_norm2s).reshape((-1, ngen)),
                                                   (idx_op, 0))
             onorms = jax.lax.dynamic_update_slice(onorms, comm_onorms.reshape((-1, ngen)),
                                                   (idx_op, 0))
             oflags = jax.lax.dynamic_update_slice(oflags, comm_oflags.reshape((-1, ngen)),
                                                   (idx_op, 0))
-
         # Handle overshoots:
         # Sharded basis
         # Case A: basis array size == new_size
@@ -218,7 +217,7 @@ def _compute_closure(
     max_size = np.prod(basis.shape[:-2])
     if monitor_norms:
         if num_dev != 0:
-            device = NamedSharding(sharding.mesh, PartitionSpec(None, None))
+            device = NamedSharding(sharding.mesh, PartitionSpec())
         else:
             device = jax.devices()[0]
         cnorms = jnp.zeros((max_size, ngen), device=device)
