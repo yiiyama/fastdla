@@ -52,26 +52,69 @@ def orthonormalize(
         projection = tensordot(innerprod(_vector, basis).conjugate(), basis, axes)
         orth = _vector - projection
         onorm2 = innerprod(orth, orth)
-        return orth, onorm2, npmod.isclose(onorm2, 0., atol=cutoff**2)
+        return orth, onorm2
 
-    orth, onorm2, is_null = _orth_and_norm2(vector)
+    orth, onorm2 = _orth_and_norm2(vector)
+    is_null = npmod.isclose(onorm2, 0., atol=cutoff**2)
     if npmod is np:
         LOG.debug('Direct orthogonalization found an orth component with norm^2 %.3e', onorm2)
         if is_null:
             return False, np.zeros_like(orth), 0.
 
-        reorth, renorm2, renull = _orth_and_norm2(orth)
+        reorth, renorm2 = _orth_and_norm2(orth)
         LOG.debug('Re-orthogonalization found an orth component with norm^2 %.3e', renorm2)
-    else:
-        reorth, renorm2, renull = jax.lax.cond(
+        if not np.isclose(renorm2, onorm2):
+            return False, np.zeros_like(reorth), 0.
+
+        return True, reorth / np.sqrt(renorm2), onorm2
+    elif npmod is jnp:
+        def reorthogonalize(_orth):
+            reorth, renorm2 = _orth_and_norm2(_orth)
+            return jax.lax.cond(
+                jnp.isclose(renorm2, onorm2),
+                lambda ro, rn2, n2: (True, ro / jnp.sqrt(rn2), n2),
+                lambda ro, rn2, n2: (False, jnp.zeros_like(ro), n2),
+                reorth, renorm2, onorm2
+            )
+
+        return jax.lax.cond(
             is_null,
-            lambda _orth: (jnp.zeros_like(_orth), 0., True),
-            _orth_and_norm2,
+            lambda _orth: (False, jnp.zeros_like(_orth), 0.),
+            reorthogonalize,
             orth
         )
 
-    result = npmod.where(renull, 0., reorth) / npmod.where(renull, 1., npmod.sqrt(renorm2))
-    return npmod.isclose(renorm2, 1.), result, onorm2
+
+def orthonormalize2(
+    vector: NDArray,
+    basis: NDArray,
+    basis_size: NDArray,
+    cutoff: float = 1.e-08,
+    innerprod: Optional[Callable[[NDArray, NDArray], NDArray]] = None,
+    npmod=np
+) -> tuple[bool, NDArray, float]:
+    """Modified Gram-Schmidt orthogonalization."""
+    if innerprod is None:
+        innerprod = npmod.vecdot
+
+    def remove_component(ib, val):
+        vec, basis = val
+        vec -= innerprod(basis[ib], vec) * basis[ib]
+        return vec, basis
+
+    if npmod is np:
+        raise NotImplementedError('Under construction')
+    else:
+        orth, _ = jax.lax.fori_loop(
+            0, basis_size,
+            remove_component,
+            (vector, basis)
+        )
+
+    onorm2 = innerprod(orth, orth)
+    is_null = npmod.isclose(onorm2, 0., atol=cutoff**2)
+    result = npmod.where(is_null, 0., orth) / npmod.where(is_null, 1., npmod.sqrt(onorm2))
+    return npmod.logical_not(is_null), result, onorm2
 
 
 def _gram_schmidt_np(
@@ -137,6 +180,8 @@ def _gram_schmidt_jnp(
             onorms, oflags = val[4:]
         has_orth, orth, onorm2 = orthonormalize(_vectors[ivec], _basis, cutoff=cutoff,
                                                 innerprod=innerprod, npmod=jnp)
+        # has_orth, orth, onorm2 = orthonormalize2(_vectors[ivec], _basis, _basis_size, cutoff=cutoff,
+        #                                          innerprod=innerprod, npmod=jnp)
         _basis, _basis_size = jax.lax.cond(
             has_orth,
             update,

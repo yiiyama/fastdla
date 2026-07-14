@@ -154,8 +154,8 @@ def _get_loop_body(
             comms = commutator(generators, basis[idx_op])
             incr = 1
 
-        comm_norm2s = innerprod(comms, comms)[..., None, None]
-        comms = jnp.where(comm_norm2s < comm_cutoff ** 2, jnp.zeros_like(comms), comms)
+        comm_norms = jnp.sqrt(innerprod(comms, comms))[..., None, None]
+        comms = jnp.where(comm_norms < comm_cutoff, jnp.zeros_like(comms), comms / comm_norms)
         # pylint: disable-next=unbalanced-tuple-unpacking
         orthonorm_result = _gram_schmidt_jnp(comms, basis, basis_size, orthonorm_cutoff, innerprod,
                                              monitor_onorms=monitor_norms)
@@ -163,7 +163,7 @@ def _get_loop_body(
         if monitor_norms:
             ngen = generators.shape[0]
             comm_onorms, comm_oflags = orthonorm_result[2:]
-            cnorms = jax.lax.dynamic_update_slice(cnorms, jnp.sqrt(comm_norm2s).reshape((-1, ngen)),
+            cnorms = jax.lax.dynamic_update_slice(cnorms, comm_norms.reshape((-1, ngen)),
                                                   (idx_op, 0))
             onorms = jax.lax.dynamic_update_slice(onorms, comm_onorms.reshape((-1, ngen)),
                                                   (idx_op, 0))
